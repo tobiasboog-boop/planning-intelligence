@@ -9,6 +9,7 @@ capaciteit want geen verzuimdata, team-mapping via AfdelingKey).
 De tool praat NOOIT direct met de database — alles loopt via NotificaClient (X-Data-Key).
 """
 from __future__ import annotations
+import os
 import sys
 from dataclasses import dataclass
 from pathlib import Path
@@ -22,7 +23,16 @@ KLANT = 1142
 
 
 def get_client() -> NotificaClient:
-    return NotificaClient()
+    """Bouwt de NotificaClient. Accepteert zowel NOTIFICA_DATA_KEY als NOTIFICA_DWH_KEY
+    (App Beheer-drafts zetten de Customer Data Key soms onder de laatste naam neer)."""
+    data_key = os.getenv("NOTIFICA_DATA_KEY") or os.getenv("NOTIFICA_DWH_KEY") or os.getenv("NOTIFICA_APP_KEY")
+    if not data_key:
+        raise RuntimeError(
+            "Geen Notifica Data-key gevonden in de omgeving. Zet in App Beheer -> deze draft -> "
+            "Environment de variabele NOTIFICA_DATA_KEY (of NOTIFICA_DWH_KEY) op de Customer Data "
+            "Key van klant 1142 en herstart de app."
+        )
+    return NotificaClient(data_key=data_key)
 
 
 def _q(client: NotificaClient, sql: str) -> pd.DataFrame:

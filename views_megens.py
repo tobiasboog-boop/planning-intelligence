@@ -326,6 +326,15 @@ def view_ai(data: ms.MegensData):
 
 # ══════════════════════════════════════════════════════════════════════════
 def render(tab_key: str):
-    data = _load()
+    try:
+        data = _load()
+    except Exception as e:
+        st.error(
+            "**Kan geen verbinding maken met de Megens-data.**\n\n"
+            f"{e}\n\n"
+            "Zet in App Beheer -> deze draft -> Environment de variabele "
+            "**NOTIFICA_DATA_KEY** op de Customer Data Key van klant 1142 en herstart de app."
+        )
+        return
     {"management": view_management, "capaciteit": view_capaciteit,
      "projecten": view_projecten, "ai": view_ai}[tab_key](data)
