@@ -25,13 +25,14 @@ from config import CLIENTS, BLOCKS, ANALYSES, DEFAULT_CLIENT, ClientProfile
 import contract
 import seasonality as sn
 import theme
-import an_balans, an_teams, an_projecten, an_controle, an_adviezen
+import an_hoofd, an_balans, an_teams, an_projecten, an_controle, an_adviezen
 
 st.set_page_config(page_title="Planning Intelligence — Notifica",
                    page_icon="📊", layout="wide", initial_sidebar_state="expanded")
 theme.inject_css()
 
 RENDER = {
+    "_hoofd": an_hoofd.render,
     "balans": an_balans.render,
     "teams": an_teams.render,
     "projecten": an_projecten.render,
@@ -158,16 +159,17 @@ if opts["seizoen"]:
     sub += " &nbsp;·&nbsp; <b>seizoenscorrectie aan</b>"
 theme.topbar("Planning Intelligence Tool", sub)
 
-actief = [k for k in ANALYSES if analyses_aan.get(k)]
-labels = [ANALYSES[k].label for k in actief]
-keys = list(actief)
-if config_mode:
-    labels.append("⚙ Inrichting")
-    keys.append("_inrichting")
-
-if not actief and not config_mode:
-    st.info("Geen analyses actief. Zet de **configuratiemodus** aan in de zijbalk om ze in te richten.")
+# Klantweergave: twee tabs — de vraag, en de projecten.
+# Configuratiemodus: alle losse analyses + inrichting (intern).
+if not config_mode:
+    labels = ["Kun je het werk aan?", "Projecten"]
+    keys = ["_hoofd", "projecten"]
 else:
+    actief = [k for k in ANALYSES if analyses_aan.get(k)]
+    labels = ["Kun je het werk aan?"] + [ANALYSES[k].label for k in actief] + ["⚙ Inrichting"]
+    keys = ["_hoofd"] + list(actief) + ["_inrichting"]
+
+if True:
     for tab, key in zip(st.tabs(labels), keys):
         with tab:
             if key == "_inrichting":

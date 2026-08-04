@@ -26,7 +26,7 @@ from theme import advice_card, MND
 # Sorteervolgorde: risico eerst, dan aandacht, dan de rest.
 RANG = {"risico": 0, "let_op": 1, "neutraal": 2, "goed": 3}
 
-MODEL = "claude-opus-4-8"
+MODEL = "claude-opus-5"
 
 
 # ── kleine helpers ────────────────────────────────────────────────────────────
@@ -282,9 +282,13 @@ def _samenvatting(data: PlanningData, signalen: list[tuple[str, str, str]], sleu
 
     try:
         client = anthropic.Anthropic()
-        bericht = client.messages.create(
+        # fallbacks="default": als de veiligheidsclassificatie de vraag weigert, draait
+        # dezelfde vraag automatisch op een ander model i.p.v. leeg terug te komen.
+        bericht = client.beta.messages.create(
             model=MODEL,
-            max_tokens=900,
+            max_tokens=1200,
+            betas=["server-side-fallback-2026-07-01"],
+            fallbacks="default",
             messages=[{"role": "user", "content": prompt}],
         )
         if bericht.stop_reason == "refusal":
