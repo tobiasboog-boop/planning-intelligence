@@ -1,49 +1,94 @@
-# Planning Intelligence Tool — prototype
+# Planning Intelligence Tool
 
-Schaalbare capaciteits- & projectplanning voor installatiebedrijven (Notifica).
-Config-gedreven **building blocks** die je per klant aan/uit zet. Zie
-[PLAN.md](PLAN.md) voor architectuur, aanpak en de vervolginvestering.
+Capaciteits- en projectplanning voor installatiebedrijven (Notifica). Config-gedreven:
+één set analyses, per klant in te richten via building blocks.
 
-> **Prototype op synthetische data** — bedoeld om te pitchen. Geen echte
-> klantdata; niet voor productiebeslissingen.
+> Zie [PLAN.md](PLAN.md) voor het commerciële plan, [DATASPEC.md](DATASPEC.md) voor het
+> Megens-datamodel en [WERKLOG.md](WERKLOG.md) voor beslissingen en lessen.
+
+## Architectuur
+
+```text
+  source_megens.py     ┐
+  source_synthetic.py  ┼──►  contract.PlanningData  ──►  an_*.py  (5 analyses)
+  (nieuwe klant: 1 adapter)         ▲
+                                    │
+                            seasonality.py (productiviteitsfactor)
+```
+
+**De analyses raken nooit een klant-specifieke kolom.** Elke bron levert dezelfde zes
+canonieke frames; daardoor maakt het voor de visuals niet uit of de data van Megens,
+van ERCO of synthetisch is.
+
+| Frame | Inhoud |
+| ------- | -------- |
+| `vraag` | nog te verrichten werk per project per week |
+| `capaciteit` | per team per week: contracturen + effectief beschikbaar |
+| `realisatie` | geboekte uren per project per week |
+| `projecten` | begroot, geboekt, nog te plannen, overschrijding, calculatie |
+| `medewerkers` | team, intern/extern, contracturen |
+| `prognose` | verwachte resterende uren + herplanning |
+
+## De vijf analyses
+
+| Analyse | Vraag die het beantwoordt |
+| --------- | --------------------------- |
+| **Capaciteitsbalans** | Past het openstaande werk in de bemensing — per week en per team? |
+| **Teambezetting** | Wie is beschikbaar, welk team, intern vs. ingeleend? |
+| **Projectvoortgang** | Blijven we binnen de begrote uren, en landt het restwerk tijdig? |
+| **Signalen & controle** | Wat moet je nakijken vóór je op deze cijfers stuurt? |
+| **Adviezen** | Welke signalen vragen nu actie? |
+
+## Configuratiemodus (intern)
+
+De schakelaar **Configuratiemodus** in de zijbalk is voor de inrichtingssessie — *niet*
+om met de klant te delen. Daarin stel je per klant in:
+
+- welke **databronnen** gekoppeld zijn
+- welke **rekenopties** aan staan (seizoens-/productiviteitsfactor, efficiency per team)
+- de **parameters**: verlofdagen, ADV, ziekte%, opleiding%, uren per dag, efficiency%
+- welke **analyses** de klant ziet
+- planningshorizon en streefbezetting
+
+De tab **Inrichting** valideert live of de gekoppelde bron zich aan het contract houdt.
+
+## Seizoenscorrectie
+
+Bruto contracturen zeggen niets over wat er in juli écht beschikbaar is. `seasonality.py`
+rekent om met de Nederlandse feestdagenkalender, de vakantieverdeling over het jaar
+(zomerpiek), ziekte en opleiding — **dezelfde rekenwijze als de Directe-urencalculator in
+het leerportaal**, zodat tool en site hetzelfde rekenen.
+
+Effect (2026, 25 verlofdagen, 4% ziekte, 1% opleiding): jaargemiddeld **83,1%** beschikbaar;
+augustus **62%**, juli **65%**, november **93%**.
 
 ## Lokaal draaien
 
 ```bash
 pip install -r requirements.txt
+cp .env.example .env      # vul NOTIFICA_DATA_KEY in voor de echte-data-profielen
 streamlit run app.py
 ```
 
-De app opent op http://localhost:8501.
+## Nieuwe klant toevoegen
 
-## Pitchen — wat te laten zien
+1. Profiel toevoegen in `config.py` → `CLIENTS`
+2. Bron-adapter schrijven die `contract.PlanningData` teruggeeft (zie `source_megens.py`)
+3. Building blocks en parameters instellen in de configuratiemodus
 
-1. **Klantprofiel** (zijbalk) — wissel tussen ERCO / Projectvoortgang-light /
-   Capaciteitssturing en laat zien hoe de tool zich herconfigureert.
-2. **Building blocks** (zijbalk) — zet live een databron aan/uit; de dashboards
-   passen zich direct aan. Dit is het schaalbaarheidsverhaal.
-3. **Dashboards** — Management, Team/medewerker, Project-analyse, AI-adviezen.
-4. **Inrichting-tab** — legt de bouwstenen visueel uit.
+Geen wijziging in de analyses nodig.
 
-## Structuur
+## Bestanden
 
 | Bestand | Rol |
-|---------|-----|
-| `config.py` | building blocks, dashboards, klantprofielen (het configuratiehart) |
-| `data_gen.py` | prototype-connector: synthetische data |
-| `engine.py` | capaciteits- en projectanalyse |
-| `views.py` | de 4 dashboards + Inrichting |
+| --------- | ----- |
+| `config.py` | building blocks, analyses, klantprofielen |
+| `contract.py` | canoniek datacontract + validatie |
+| `seasonality.py` | productiviteits-/seizoensfactor |
+| `source_megens.py` | Megens (klant 1142) via de Notifica Data API |
+| `megens_source.py` | de onderliggende, geverifieerde queries |
+| `source_synthetic.py` | synthetische demo-data |
+| `an_balans/teams/projecten/controle/adviezen.py` | de 5 analyses |
+| `an_common.py` | gedeelde helpers (opmaak, degradatie, week-as) |
 | `theme.py` | Notifica-huisstijl |
-| `app.py` | schil met klantkiezer + schakelaars |
-
-## Optioneel: live AI-samenvatting
-
-Zet `ANTHROPIC_API_KEY` in `.env` (zie `.env.example`) voor een live
-Claude-samenvatting in het AI-adviezen-dashboard. Zonder sleutel draait alles op
-regelgebaseerde adviezen.
-
-## Productie
-
-Alle data is nu synthetisch. In productie wisselen alleen de connectoren naar
-Syntess (Notifica Data API), U-Serve en de invoer-applicatie (PostgreSQL op VPS3).
-Engine en views blijven ongewijzigd. Details in [PLAN.md](PLAN.md) §3 en §5.
+| `app.py` | schil: klantkiezer, configuratiemodus, routing |

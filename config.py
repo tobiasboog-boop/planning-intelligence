@@ -1,17 +1,18 @@
 """
-config.py — Building-block registry + per-klant profielen.
+config.py — Building-block registry + klantprofielen + configuratiemodus.
 
-Dit bestand is het HART van de schaalbaarheid: de hele tool wordt gedreven
-door configuratie. Building blocks en views staan hier als registry; per
-klant staat een profiel dat blocks/views aan- of uitzet en instellingen,
-terminologie en databronnen configureert.
+Dit is het configuratiehart. De hele tool wordt hierdoor gedreven:
 
-Nieuwe klant erbij = één profiel toevoegen. Geen code aanpassen.
-Building block koppelen aan echte bron = één connector-key wijzigen.
+  • BLOCKS   — de canonieke building blocks (databronnen + rekenopties)
+  • ANALYSES — de vaste set analyses; elke analyse declareert welke blokken hij nodig heeft
+  • CLIENTS  — per klant één profiel: welke blokken aan, welke parameters
+
+Nieuwe klant uitrollen = één profiel toevoegen + de bron koppelen. Geen code aanpassen.
+De **configuratiemodus** (intern, niet met de klant delen) laat je dit live schakelen —
+dat is de inrichtingssessie per klant.
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Callable
 
 # ── Merk / kleuren ────────────────────────────────────────────────────────
 NAVY = "#16136F"
@@ -24,175 +25,118 @@ RED = "#EF4444"
 GREY = "#E5E7EB"
 
 
-# ── Building blocks (databronnen) ──────────────────────────────────────────
-# Elk building block is een los, herbruikbaar databrok. Het declareert waar
-# de data vandaan komt (source), welke velden het levert en of het per klant
-# aan/uit staat. De prototype-connector = synthetische data; in productie
-# wisselt alleen `connector` naar Syntess / U-Serve / Invoer-app / Data-API.
-
+# ── Building blocks ───────────────────────────────────────────────────────
 @dataclass(frozen=True)
 class Block:
     key: str
     label: str
-    source: str                 # bronsysteem (waar de data in productie vandaan komt)
-    connector: str              # actieve connector (prototype: "synthetic")
-    icon: str
-    fields: list[str]
-    description: str
+    soort: str            # "databron" of "rekenoptie"
+    bron: str             # waar het in productie vandaan komt
+    uitleg: str
 
 
 BLOCKS: dict[str, Block] = {
-    "demand": Block(
-        key="demand",
-        label="Benodigde uren",
-        source="Syntess (ERP)",
-        connector="synthetic",
-        icon="hammer",
-        fields=["Project", "Calculatie startdatum", "Calculatie einddatum",
-                "Calculatie uren", "Werkelijk bestede uren"],
-        description="De vraagkant: per project de gecalculeerde uren, planning en "
-                    "wat er al werkelijk op geboekt is.",
-    ),
-    "availability": Block(
-        key="availability",
-        label="Beschikbaarheid uren",
-        source="U-Serve (HR)",
-        connector="synthetic",
-        icon="user",
-        fields=["Medewerker", "Start", "Einddatum", "Contracturen",
-                "Verlof / ziekte / opleiding / feestdagen"],
-        description="De aanbodkant: per medewerker de netto beschikbare uren na "
-                    "verlof, ziekte, opleiding en feestdagen.",
-    ),
-    "forecast": Block(
-        key="forecast",
-        label="Prognose project",
-        source="Invoer-applicatie",
-        connector="synthetic",
-        icon="target",
-        fields=["Project", "Prognose startdatum", "Prognose einddatum",
-                "Prognose resterende uren", "Opmerking"],
-        description="Menselijke bijsturing op de kale calculatie: de verwachte "
-                    "resterende uren en (her)planning per project.",
-    ),
-    "team_alloc": Block(
-        key="team_alloc",
-        label="Toewijzing capaciteit teams",
-        source="Invoer-applicatie",
-        connector="synthetic",
-        icon="users",
-        fields=["Medewerker", "Intern / extern", "Team", "Startdatum", "Einddatum"],
-        description="Wie zit wanneer in welk team, en of het eigen personeel of "
-                    "ingehuurd (extern) is.",
-    ),
-    "team_master": Block(
-        key="team_master",
-        label="Stamgegevens teams",
-        source="Invoer-applicatie",
-        connector="synthetic",
-        icon="layers",
-        fields=["Team", "Efficiency-factor"],
-        description="Per team de efficiency-factor waarmee bruto uren naar "
-                    "effectief inzetbare uren worden vertaald.",
-    ),
+    # Databronnen (canonieke frames)
+    "vraag": Block("vraag", "Benodigde / begrote uren", "databron", "ERP (Syntess)",
+                   "Het werk dat nog verricht moet worden, uitgezet over de weken."),
+    "capaciteit": Block("capaciteit", "Beschikbaarheid / capaciteit", "databron", "ERP of HR (U-Serve)",
+                        "Contracturen per medewerker/team per week."),
+    "realisatie": Block("realisatie", "Werkelijk bestede uren", "databron", "ERP (Syntess)",
+                        "Geboekte uren per project — de realisatie."),
+    "projecten": Block("projecten", "Projectoverzicht", "databron", "ERP (Syntess)",
+                       "Per project: begroot, geboekt, nog te plannen, overschrijding."),
+    "medewerkers": Block("medewerkers", "Teams & medewerkers", "databron", "ERP of HR",
+                         "Team-indeling en intern/extern (ingeleend)."),
+    "prognose": Block("prognose", "Prognose project", "databron", "Invoer-applicatie",
+                      "Menselijke bijsturing: verwachte resterende uren en herplanning."),
+    # Rekenopties
+    "seizoen": Block("seizoen", "Seizoenscorrectie (productiviteitsfactor)", "rekenoptie", "Model",
+                     "Rekent bruto contracturen om naar effectief beschikbare uren: verlof "
+                     "(zomerpiek), feestdagen, ziekte en opleiding. Zelfde rekenwijze als de "
+                     "Directe-urencalculator in het leerportaal."),
+    "efficiency": Block("efficiency", "Efficiency-factor per team", "rekenoptie", "Invoer-applicatie",
+                        "Extra correctie per team van beschikbare naar productief inzetbare uren."),
 }
 
 
-# ── Views (dashboards) ─────────────────────────────────────────────────────
-# Elke view declareert welke building blocks hij minimaal nodig heeft. Staat
-# een benodigd block uit, dan degradeert de view netjes (melding i.p.v. crash).
-
+# ── Analyses ──────────────────────────────────────────────────────────────
 @dataclass(frozen=True)
-class View:
+class Analysis:
     key: str
     label: str
-    icon: str
-    requires: list[str]         # building-block keys die nodig zijn
-    optional: list[str] = field(default_factory=list)
+    requires: list[str]
+    uitleg: str
 
 
-VIEWS: dict[str, View] = {
-    "management": View(
-        key="management", label="Management overzicht", icon="dashboard",
-        requires=["demand", "availability"],
-        optional=["forecast", "team_alloc", "team_master"],
-    ),
-    "team": View(
-        key="team", label="Team / medewerker", icon="users",
-        requires=["availability"],
-        optional=["team_alloc", "team_master", "demand"],
-    ),
-    "project": View(
-        key="project", label="Project-analyse", icon="clipboard",
-        requires=["demand"],
-        optional=["forecast"],
-    ),
-    "ai": View(
-        key="ai", label="AI-adviezen", icon="lightning",
-        requires=["demand", "availability"],
-        optional=["forecast", "team_alloc", "team_master"],
-    ),
+ANALYSES: dict[str, Analysis] = {
+    "balans": Analysis("balans", "Capaciteitsbalans", ["vraag", "capaciteit"],
+                       "Past het openstaande werk in de bemensing? Per week en per team."),
+    "teams": Analysis("teams", "Teambezetting", ["capaciteit", "medewerkers"],
+                      "Wie is beschikbaar, welk team, intern vs. ingeleend."),
+    "projecten": Analysis("projecten", "Projectvoortgang", ["projecten"],
+                          "Begroot vs. geboekt vs. nog te plannen, met vooruitblik per project."),
+    "controle": Analysis("controle", "Signalen & controle", ["projecten"],
+                         "Datakwaliteit en uitschieters: wat vraagt aandacht vóór je erop stuurt."),
+    "adviezen": Analysis("adviezen", "Adviezen", ["projecten"],
+                         "Automatische signalen uit de gecombineerde bronnen."),
 }
 
 
-# ── Klant-profielen ────────────────────────────────────────────────────────
-# Eén profiel per klant. Zet building blocks en views aan/uit en configureert
-# instellingen. Dit is alles wat je aanraakt om een nieuwe klant uit te rollen.
-
+# ── Klantprofielen ────────────────────────────────────────────────────────
 @dataclass
 class ClientProfile:
     key: str
     name: str
     tagline: str
-    blocks: dict[str, bool]                 # welke building blocks aan
-    views: dict[str, bool]                  # welke views zichtbaar
-    horizon_weeks: int = 26
-    default_efficiency: float = 0.85        # gebruikt als team_master uit staat
-    target_utilization: float = 0.90        # streefbezetting voor signalering
-    seed: int = 42                          # reproduceerbare synthetische data
+    data_mode: str                                   # "megens" | "synthetic"
+    blocks: dict[str, bool] = field(default_factory=dict)
+    analyses: dict[str, bool] = field(default_factory=dict)
+    horizon_weken: int = 26
+    streefbezetting: int = 90                        # % — signaleringsgrens
+    # Seizoens-/productiviteitsparameters (per klant instelbaar)
+    vakantiedagen: float = 25.0
+    adv_dagen: float = 0.0
+    ziekte_pct: float = 4.0
+    opleiding_pct: float = 1.0
+    uren_per_dag: float = 8.0
+    default_efficiency: int = 85                     # % — als 'efficiency' aan staat
+    # Alleen voor synthetische profielen
+    seed: int = 42
     n_teams: int = 5
     n_medewerkers: int = 42
     n_projecten: int = 28
-    data_mode: str = "synthetic"            # "synthetic" (demo) of "megens" (echte Data API)
 
+
+ALLE_BLOKKEN_AAN = {k: True for k in BLOCKS}
+ALLE_ANALYSES_AAN = {k: True for k in ANALYSES}
 
 CLIENTS: dict[str, ClientProfile] = {
-    # Megens — lanceerklant op ECHTE Syntess-data (klant 1142) via de Notifica Data API.
+    # Lanceerklant: echte Syntess-data via de Notifica Data API
     "megens": ClientProfile(
         key="megens", name="Megens (echte data)",
-        tagline="Live op Syntess-data (klant 1142) via de Notifica Data API",
-        blocks={"demand": True, "availability": True, "forecast": True,
-                "team_alloc": True, "team_master": True},
-        views={"management": True, "team": True, "project": True, "ai": True},
+        tagline="Live Syntess-data (klant 1142) via de Notifica Data API",
         data_mode="megens",
+        blocks={**ALLE_BLOKKEN_AAN, "prognose": False, "efficiency": False},
+        analyses=dict(ALLE_ANALYSES_AAN),
     ),
-    # ERCO — de pitch-klant: alle building blocks + alle views aan.
-    "erco": ClientProfile(
-        key="erco", name="ERCO",
-        tagline="Volledige inrichting — alle building blocks actief",
-        blocks={"demand": True, "availability": True, "forecast": True,
-                "team_alloc": True, "team_master": True},
-        views={"management": True, "team": True, "project": True, "ai": True},
-        horizon_weeks=26, default_efficiency=0.85, target_utilization=0.90,
+    # Volledige inrichting op synthetische data (alle blokken, incl. prognose)
+    "volledig": ClientProfile(
+        key="volledig", name="Voorbeeld: volledige inrichting",
+        tagline="Alle building blocks actief — inclusief prognose en efficiency",
+        data_mode="synthetic",
+        blocks=dict(ALLE_BLOKKEN_AAN), analyses=dict(ALLE_ANALYSES_AAN),
         seed=7, n_teams=6, n_medewerkers=58, n_projecten=34,
     ),
-    # Voorbeeldklant B — start klein: alleen vraag + projectvoortgang.
-    "demand_only": ClientProfile(
-        key="demand_only", name="Voorbeeld: Projectvoortgang-light",
-        tagline="Instapmodel — alleen vraag & project-analyse",
-        blocks={"demand": True, "availability": False, "forecast": True,
-                "team_alloc": False, "team_master": False},
-        views={"management": False, "team": False, "project": True, "ai": False},
-        horizon_weeks=20, seed=13, n_teams=3, n_medewerkers=22, n_projecten=18,
-    ),
-    # Voorbeeldklant C — capaciteitssturing zonder ERP-koppeling.
-    "capacity_light": ClientProfile(
-        key="capacity_light", name="Voorbeeld: Capaciteitssturing",
-        tagline="Zonder ERP-koppeling — capaciteit & teams centraal",
-        blocks={"demand": True, "availability": True, "forecast": False,
-                "team_alloc": True, "team_master": True},
-        views={"management": True, "team": True, "project": False, "ai": True},
-        horizon_weeks=13, seed=21, n_teams=4, n_medewerkers=30, n_projecten=20,
+    # Instapmodel: geen HR-koppeling
+    "instap": ClientProfile(
+        key="instap", name="Voorbeeld: instapmodel",
+        tagline="Zonder HR-koppeling — alleen vraag & projectvoortgang",
+        data_mode="synthetic",
+        blocks={"vraag": True, "capaciteit": False, "realisatie": True, "projecten": True,
+                "medewerkers": False, "prognose": True, "seizoen": False, "efficiency": False},
+        analyses={"balans": False, "teams": False, "projecten": True,
+                  "controle": True, "adviezen": True},
+        horizon_weken=20, seed=13, n_teams=3, n_medewerkers=22, n_projecten=18,
     ),
 }
 
