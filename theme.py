@@ -38,11 +38,14 @@ def inject_css() -> None:
     [data-testid="stSidebar"] label {{color:rgba(255,255,255,.72)!important;font-size:11px;
         text-transform:uppercase;letter-spacing:.4px;font-weight:600;}}
     [data-testid="stSidebar"] hr {{border-color:rgba(255,255,255,.14);}}
-    [data-testid="stSidebar"] [data-baseweb="select"] > div {{background:rgba(255,255,255,.10)!important;
-        border-color:rgba(255,255,255,.18)!important;}}
-    [data-testid="stSidebar"] [data-baseweb="select"] * {{color:#fff!important;}}
-    [data-testid="stSidebar"] [data-baseweb="popover"] {{color:{NAVY}!important;}}
-    [data-testid="stSidebar"] [data-baseweb="popover"] * {{color:{NAVY}!important;}}
+    /* Selectbox in de navy sidebar: witte box met DONKERE tekst (anders wit-op-wit) */
+    [data-testid="stSidebar"] [data-baseweb="select"] > div {{background:#fff!important;
+        border-color:rgba(255,255,255,.35)!important;}}
+    [data-testid="stSidebar"] [data-baseweb="select"] * {{color:{NAVY}!important;
+        -webkit-text-fill-color:{NAVY}!important;}}
+    [data-testid="stSidebar"] [data-baseweb="select"] svg {{fill:{NAVY}!important;}}
+    [data-testid="stSidebar"] input {{color:{NAVY}!important;-webkit-text-fill-color:{NAVY}!important;}}
+    [data-baseweb="popover"] * {{color:{NAVY}!important;-webkit-text-fill-color:{NAVY}!important;}}
     [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {{color:rgba(255,255,255,.72)!important;}}
 
     /* Algemeen */
