@@ -79,16 +79,47 @@ def view_management(data: ms.MegensData):
          "sub": f"van {len(ov)} actief", "cls": "risk" if n_over else "ok"},
     ])
 
-    st.markdown("###### Nog in te plannen werk vs. beschikbare capaciteit per week")
+    # Alleen capaciteit van afdelingen die daadwerkelijk vraag hebben (appels-met-appels)
+    afd_met_vraag = set(dem["afdeling"].dropna().unique())
+    cap_rel = cap[cap["afdeling"].isin(afd_met_vraag)]
+    cap_rel_w = cap_rel.groupby("week_start")["capaciteit_uren"].sum().reindex(weeks, fill_value=0.0)
+
+    st.markdown("###### Nog in te plannen werk vs. capaciteit van de betrokken afdelingen")
+    st.caption(f"Capaciteit hier = alleen de {len(afd_met_vraag)} afdeling(en) met openstaand werk "
+               f"(niet de hele organisatie). Bruto: zonder verlof/ziekte/feestdagen.")
+    bez_w = (dem_w / cap_rel_w.replace(0, np.nan) * 100)
+    bar_colors = [RED if b > 100 else (AMBER if b > 85 else GOLD) for b in bez_w.fillna(0)]
     fig = go.Figure()
-    fig.add_trace(go.Scatter(x=list(weeks), y=cap_w.values, name="Capaciteit (bruto)",
+    fig.add_trace(go.Scatter(x=list(weeks), y=cap_rel_w.values, name="Capaciteit betrokken afdelingen",
                              mode="lines", line=dict(color=NAVY2, width=2),
                              fill="tozeroy", fillcolor="rgba(54,54,162,0.10)"))
     fig.add_trace(go.Bar(x=list(weeks), y=dem_w.values, name="Nog in te plannen",
-                         marker_color=GOLD, opacity=0.9))
+                         marker_color=bar_colors, opacity=0.95,
+                         customdata=bez_w.fillna(0).values,
+                         hovertemplate="%{x|%d-%m-%Y}<br>%{y:.0f} u nog te plannen<br>"
+                                       "beslag: %{customdata:.0f}%<extra></extra>"))
     fig.update_layout(**PLOT, height=330, barmode="overlay")
     fig.update_yaxes(title="uren", gridcolor="#EEF0F7")
     st.plotly_chart(fig, width="stretch")
+
+    st.markdown("###### Beslag op capaciteit per afdeling per week (%)")
+    st.caption("Hier zit de urgentie: welk team knelt in welke week. Rood = meer openstaand werk dan capaciteit.")
+    dm = dem.groupby(["afdeling", "week_start"])["vraag_uren"].sum()
+    cm = cap.groupby(["afdeling", "week_start"])["capaciteit_uren"].sum()
+    hm = (dm / cm).mul(100).unstack().reindex(columns=weeks)
+    hm = hm.dropna(how="all").sort_index()
+    if len(hm):
+        fig_hm = go.Figure(go.Heatmap(
+            z=hm.values, x=[w.strftime("wk %V") for w in hm.columns], y=list(hm.index),
+            zmin=0, zmax=120,
+            colorscale=[[0.0, "#EEF0FB"], [0.4, NAVY_LIGHT], [0.7, NAVY2],
+                        [0.8, AMBER], [1.0, RED]],
+            colorbar=dict(title="%", thickness=10),
+            hovertemplate="%{y}<br>%{x}: %{z:.0f}% beslag<extra></extra>"))
+        fig_hm.update_layout(**{**PLOT, "margin": dict(l=10, r=10, t=10, b=10)},
+                             height=max(200, 42 * len(hm)))
+        fig_hm.update_yaxes(tickfont=dict(size=10))
+        st.plotly_chart(fig_hm, width="stretch")
 
     c1, c2 = st.columns(2)
     with c1:
@@ -198,25 +229,19 @@ def view_projecten(data: ms.MegensData):
         fig.update_yaxes(tickfont=dict(size=9))
         st.plotly_chart(fig, width="stretch")
     with c2:
-        st.markdown("###### Besteed vs. begroot (bubbel = begroting)")
+        st.markdown("###### Verdeling: % van begroting besteed")
         d = ov[ov["begrotingsuren"] > 0].copy()
-        d["besteed_pct"] = d["besteed_pct"].clip(upper=250)
-        over = d["overschrijding"] > 0
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(x=d.loc[~over, "besteed_pct"], y=d.loc[~over, "nog_te_plannen"],
-                                 mode="markers", name="Binnen behoefte",
-                                 marker=dict(size=np.sqrt(d.loc[~over, "begrotingsuren"])*0.9,
-                                             color=NAVY2, opacity=0.55, line=dict(width=1, color="white")),
-                                 text=d.loc[~over, "project"], hovertemplate="%{text}<br>besteed %{x:.0f}%<extra></extra>"))
-        fig.add_trace(go.Scatter(x=d.loc[over, "besteed_pct"], y=d.loc[over, "nog_te_plannen"],
-                                 mode="markers", name="Overschrijding",
-                                 marker=dict(size=np.sqrt(d.loc[over, "begrotingsuren"])*0.9,
-                                             color=RED, opacity=0.7, line=dict(width=1, color="white")),
-                                 text=d.loc[over, "project"], hovertemplate="%{text}<br>besteed %{x:.0f}%<extra></extra>"))
-        fig.add_vline(x=100, line_dash="dot", line_color=GREY)
+        bins = [0, 25, 50, 75, 100, 125, 150, float("inf")]
+        labels = ["0-25%", "25-50%", "50-75%", "75-100%", "100-125%", "125-150%", "150%+"]
+        d["bucket"] = pd.cut(d["besteed_pct"], bins=bins, labels=labels, right=True)
+        counts = d["bucket"].value_counts().reindex(labels, fill_value=0)
+        colors = [NAVY_LIGHT, NAVY_LIGHT, NAVY2, NAVY2, AMBER, RED, RED]
+        fig = go.Figure(go.Bar(x=labels, y=counts.values, marker_color=colors,
+                               text=counts.values, textposition="outside"))
+        fig.add_vline(x=3.5, line_dash="dot", line_color=GREY,
+                     annotation_text="begroting bereikt", annotation_position="top")
         fig.update_layout(**PLOT, height=360)
-        fig.update_xaxes(title="% van begroting besteed", gridcolor="#EEF0F7")
-        fig.update_yaxes(title="nog te plannen (u)", gridcolor="#EEF0F7")
+        fig.update_yaxes(title="aantal projecten", gridcolor="#EEF0F7")
         st.plotly_chart(fig, width="stretch")
 
     st.markdown("###### Projectenlijst")
@@ -230,12 +255,18 @@ def view_projecten(data: ms.MegensData):
         "% gereed": st.column_config.NumberColumn(format="%d%%"),
     })
 
-    # ── Drilldown ────────────────────────────────────────────────────────────
-    st.markdown("###### Detail per project")
+    # ── Drilldown: burn-up met vooruitblik ───────────────────────────────────
+    st.markdown("###### Detail per project — burn-up met vooruitblik")
     if len(ov):
         keuze = st.selectbox("Project", ov["project"].tolist())
         r = ov[ov["project"] == keuze].iloc[0]
+        pk = int(r["project_key"])
         bp_txt = f"{r['besteed_pct']:.0f}%" if pd.notna(r["besteed_pct"]) else "n.v.t."
+
+        # verwachte eindstand = geboekt + nog te plannen
+        verwacht = float(r["geboekt"]) + float(r["nog_te_plannen"])
+        boven = verwacht - float(r["begrotingsuren"])
+
         cc1, cc2 = st.columns([2, 3])
         with cc1:
             st.markdown(
@@ -243,27 +274,54 @@ def view_projecten(data: ms.MegensData):
                 f'<b>Fase:</b> {r["fase"] or "—"}<br>'
                 f'<b>Begroot:</b> {fmt(r["begrotingsuren"])} u<br>'
                 f'<b>Calculatie:</b> {fmt(r["calculatie_uren"])} u<br>'
-                f'<b>Geboekt:</b> {fmt(r["geboekt"])} u '
-                f'({bp_txt} van begroting)<br>'
+                f'<b>Geboekt:</b> {fmt(r["geboekt"])} u ({bp_txt} van begroting)<br>'
                 f'<b>Nog te plannen:</b> {fmt(r["nog_te_plannen"])} u<br>'
-                f'<b>Overschrijding:</b> <span style="color:{RED if r["overschrijding"]>0 else GREEN}">'
-                f'{fmt(r["overschrijding"])} u</span></div>', unsafe_allow_html=True)
+                f'<b>Verwachte eindstand:</b> {fmt(verwacht)} u '
+                f'<span style="color:{RED if boven > 0 else GREEN};font-weight:700">'
+                f'({"+" if boven >= 0 else ""}{fmt(boven)} u t.o.v. begroting)</span>'
+                f'</div>', unsafe_allow_html=True)
         with cc2:
-            wk = _booked_week(int(r["project_key"]))
+            wk = _booked_week(pk)
+            fig = go.Figure()
+            today = pd.Timestamp.today().normalize()
+            cum_nu = 0.0
             if len(wk):
                 wk = wk.sort_values("week_start")
                 wk["cum"] = wk["geboekt"].cumsum()
-                fig = go.Figure()
-                fig.add_trace(go.Bar(x=wk["week_start"], y=wk["geboekt"], name="Geboekt/week", marker_color=NAVY_LIGHT))
-                fig.add_trace(go.Scatter(x=wk["week_start"], y=wk["cum"], name="Cumulatief", line=dict(color=NAVY2, width=2)))
-                if r["begrotingsuren"] > 0:
-                    fig.add_hline(y=r["begrotingsuren"], line_dash="dash", line_color=GOLD,
-                                  annotation_text="begroting", annotation_position="top left")
-                fig.update_layout(**PLOT, height=240)
-                fig.update_yaxes(title="uren", gridcolor="#EEF0F7")
-                st.plotly_chart(fig, width="stretch")
-            else:
-                st.caption("Geen geboekte uren op dit project.")
+                cum_nu = float(wk["cum"].iloc[-1])
+                fig.add_trace(go.Scatter(x=wk["week_start"], y=wk["cum"], name="Geboekt (cumulatief)",
+                                         mode="lines+markers", line=dict(color=NAVY2, width=2.5),
+                                         marker=dict(size=4)))
+            # vooruitblik: resterende vraag van dit project over toekomstige weken
+            fwd = data.demand_week[data.demand_week["project_key"] == pk] \
+                    .groupby("week_start")["vraag_uren"].sum().sort_index()
+            if len(fwd):
+                fwd_cum = cum_nu + fwd.cumsum()
+                x_fwd = [wk["week_start"].iloc[-1]] + list(fwd_cum.index) if len(wk) else list(fwd_cum.index)
+                y_fwd = [cum_nu] + list(fwd_cum.values) if len(wk) else list(fwd_cum.values)
+                fig.add_trace(go.Scatter(x=x_fwd, y=y_fwd, name="Nog te plannen (prognose)",
+                                         mode="lines+markers", line=dict(color=GOLD, width=2.5, dash="dash"),
+                                         marker=dict(size=4)))
+            if r["begrotingsuren"] > 0:
+                fig.add_hline(y=float(r["begrotingsuren"]), line_dash="dot", line_color=NAVY,
+                              annotation_text="begroting", annotation_position="top left")
+            if boven > 0 and r["begrotingsuren"] > 0:
+                fig.add_hrect(y0=float(r["begrotingsuren"]), y1=verwacht,
+                              fillcolor=RED, opacity=0.10, line_width=0,
+                              annotation_text=f"+{fmt(boven)} u boven begroting",
+                              annotation_position="bottom right",
+                              annotation_font=dict(size=10, color=RED))
+            fig.add_shape(type="line", x0=today, x1=today, xref="x",
+                          y0=0, y1=1, yref="paper",
+                          line=dict(color=GREY, width=1, dash="dot"))
+            fig.add_annotation(x=today, xref="x", y=1.0, yref="paper", yanchor="bottom",
+                               text="vandaag", showarrow=False,
+                               font=dict(size=10, color="#8A8DB0"))
+            fig.update_layout(**PLOT, height=280)
+            fig.update_yaxes(title="cumulatieve uren", gridcolor="#EEF0F7")
+            st.plotly_chart(fig, width="stretch")
+            if not len(wk) and not len(fwd):
+                st.caption("Geen geboekte uren en geen ingeplande vraag op dit project.")
 
 
 # ══════════════════════════════════════════════════════════════════════════

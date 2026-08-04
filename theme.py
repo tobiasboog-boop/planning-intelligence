@@ -40,10 +40,13 @@ def inject_css() -> None:
     [data-testid="stSidebar"] hr {{border-color:rgba(255,255,255,.14);}}
     [data-testid="stSidebar"] [data-baseweb="select"] > div {{background:rgba(255,255,255,.10)!important;
         border-color:rgba(255,255,255,.18)!important;}}
+    [data-testid="stSidebar"] [data-baseweb="select"] * {{color:#fff!important;}}
+    [data-testid="stSidebar"] [data-baseweb="popover"] {{color:{NAVY}!important;}}
+    [data-testid="stSidebar"] [data-baseweb="popover"] * {{color:{NAVY}!important;}}
     [data-testid="stSidebar"] [data-testid="stWidgetLabel"] p {{color:rgba(255,255,255,.72)!important;}}
 
     /* Algemeen */
-    .block-container {{padding-top:1.1rem;max-width:100%;}}
+    .block-container {{padding-top:2.2rem;max-width:100%;}}
     h1,h2,h3,h4 {{color:{NAVY}!important;font-family:'Segoe UI',sans-serif;}}
     h1 {{font-size:22px!important;}}
     h2 {{font-size:17px!important;margin-top:.4rem;}}
@@ -51,7 +54,8 @@ def inject_css() -> None:
 
     /* Topbar */
     .pi-topbar {{display:flex;align-items:center;gap:14px;padding:10px 18px;
-        background:linear-gradient(135deg,{NAVY} 0%,{NAVY2} 100%);border-radius:12px;margin-bottom:16px;}}
+        background:linear-gradient(135deg,{NAVY} 0%,{NAVY2} 100%);border-radius:12px;
+        margin:4px 0 16px;position:relative;z-index:1;}}
     .pi-topbar img {{height:26px;}}
     .pi-topbar .t {{color:#fff;font-size:15px;font-weight:700;letter-spacing:.2px;}}
     .pi-topbar .s {{color:rgba(255,255,255,.72);font-size:12px;margin-left:auto;text-align:right;}}
