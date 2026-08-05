@@ -31,6 +31,10 @@ SCHEMA = {
     "medewerkers": ["mdw_key", "medewerker", "team", "type", "contract_uren", "in_planning"],
     # Prognose: menselijke bijsturing op de kale calculatie
     "prognose": ["project_key", "prognose_eind", "resterend", "opmerking"],
+    # Realisatietempo: wat er per week daadwerkelijk doorheen gaat.
+    # Nodig omdat planning niet altijd vooruit wordt vastgelegd — dan is het tempo
+    # waarmee gewerkt wordt de enige eerlijke maat voor wat er nog bij kan.
+    "tempo": ["week_start", "projecturen", "indirecte_uren"],
 }
 
 
@@ -60,6 +64,24 @@ class PlanningData:
     medewerkers: pd.DataFrame
     prognose: pd.DataFrame
     meta: SourceMeta
+    tempo: pd.DataFrame = field(default_factory=lambda: leeg("tempo"))
+
+    def tempo_per_week(self, weken: int = 12) -> dict:
+        """Mediaan projecturen en indirecte uren per week over de laatste `weken`
+        volledige weken. Mediaan i.p.v. gemiddelde: robuust tegen een bouwvakweek
+        of een week die nog niet volledig geboekt is."""
+        t = self.tempo
+        if not len(t):
+            return {}
+        t = t.copy().sort_values("week_start").tail(weken)
+        return {
+            "projecturen": float(t["projecturen"].median()),
+            "indirecte_uren": float(t["indirecte_uren"].median()),
+            "totaal": float((t["projecturen"] + t["indirecte_uren"]).median()),
+            "weken": len(t),
+            "van": pd.to_datetime(t["week_start"]).min(),
+            "tot": pd.to_datetime(t["week_start"]).max(),
+        }
 
     def heeft(self, frame: str) -> bool:
         return len(getattr(self, frame, [])) > 0

@@ -63,6 +63,56 @@ def _basis(data: PlanningData, profile: ClientProfile, opts: dict):
     return weken, v_w, c_w, bruto_w, beslag, cap_rel, kolom
 
 
+def _tempo_antwoord(data, opts, weken, c_w):
+    """Conclusie op basis van het WERKELIJKE tempo.
+
+    Bij Megens wordt vooruit nauwelijks gepland; dan is de planning geen maat voor
+    de vrije ruimte. Wat er per week doorheen gaat, is dat wel.
+    """
+    t = data.tempo_per_week()
+    if not t:
+        return None
+    cap_wk = float(c_w.mean()) if len(c_w) else 0.0
+    bezet = t["totaal"]
+    vrij = cap_wk - bezet
+    openstaand = float(data.vraag["uren"].sum()) if len(data.vraag) else 0.0
+    proj_tempo = t["projecturen"]
+
+    # Hoe lang duurt het openstaande werk bij het huidige projecttempo?
+    weken_tempo = (openstaand / proj_tempo) if proj_tempo > 0 else float("nan")
+    # En hoe lang als je alleen de vrije ruimte inzet?
+    weken_vrij = (openstaand / vrij) if vrij > 0 else float("inf")
+
+    label_cap = "effectief beschikbaar" if opts.get("seizoen") else "bruto contract"
+    basis = (f"Gemeten over {t['weken']} volledige weken "
+             f"({pd.Timestamp(t['van']).strftime('%d-%m')} t/m "
+             f"{pd.Timestamp(t['tot']).strftime('%d-%m-%Y')}).")
+
+    if vrij <= 0:
+        return ("risico",
+                f"Nee &mdash; je zit al vol. Er gaat <b>{fmt(bezet)} uur per week</b> doorheen "
+                f"terwijl er <b>{fmt(cap_wk)} uur</b> {label_cap} is.",
+                f"Het openstaande werk van <b>{fmt(openstaand)} uur</b> kan er alleen bij als er "
+                f"iets anders af gaat, of met extra mensen. {basis}", t, cap_wk, bezet, vrij,
+                openstaand, weken_tempo)
+
+    kind = "risico" if weken_vrij > 26 else ("let_op" if weken_vrij > 13 else "goed")
+    kop = (f"Het openstaande werk van <b>{fmt(openstaand)} uur</b> kost bij je huidige tempo "
+           f"ongeveer <b>{weken_tempo:.0f} weken</b> &mdash; met alleen je vrije ruimte "
+           f"<b>{weken_vrij:.0f} weken</b>.")
+    inleen = float(data.tempo["uren_buiten_populatie"].median()) if \
+        "uren_buiten_populatie" in data.tempo.columns else 0.0
+    extra = ""
+    if inleen > 0:
+        extra = (f" Daarnaast wordt er <b>{fmt(inleen)} uur per week</b> geboekt door mensen "
+                 f"zonder contracturen &mdash; ingeleende capaciteit buiten deze telling.")
+    toe = (f"Je eigen ploeg draait nu <b>{fmt(proj_tempo)} projecturen</b> plus "
+           f"<b>{fmt(t['indirecte_uren'])} indirecte uren</b> per week, samen {fmt(bezet)} van de "
+           f"{fmt(cap_wk)} uur {label_cap}. Dat laat <b>{fmt(vrij)} uur per week</b> echt vrij."
+           f"{extra} {basis}")
+    return (kind, kop, toe, t, cap_wk, bezet, vrij, openstaand, weken_tempo)
+
+
 def _antwoord(data, profile, opts, weken, v_w, c_w, beslag, cap_rel, kolom):
     """De conclusie in gewone taal: past het werk in de bemensing, en waar niet?"""
     eff = (opts.get("efficiency_pct", 100) / 100) if opts.get("efficiency") else 1.0
@@ -136,6 +186,80 @@ def render(data: PlanningData, profile: ClientProfile, opts: dict) -> None:
         return
 
     weken, v_w, c_w, bruto_w, beslag, cap_rel, kolom = _basis(data, profile, opts)
+
+    # Realisatietempo is de eerlijkste maat zodra vooruit nauwelijks gepland wordt.
+    tempo_res = _tempo_antwoord(data, opts, weken, c_w)
+    if tempo_res:
+        kind, kop, toe, t, cap_wk, bezet, vrij, openstaand, weken_tempo = tempo_res
+        _antwoordblok(kind, kop, toe)
+
+        kpi_cards([
+            {"lbl": "Openstaand werk", "val": fmt(openstaand), "sub": "uren nog te plannen",
+             "cls": "accent"},
+            {"lbl": "Tempo projecturen", "val": fmt(t["projecturen"]), "sub": "per week (mediaan)"},
+            {"lbl": "Indirect", "val": fmt(t["indirecte_uren"]), "sub": "per week"},
+            {"lbl": "Vrije ruimte", "val": fmt(vrij), "sub": "uren per week",
+             "cls": "risk" if vrij <= 0 else ("warn" if vrij < 0.15 * cap_wk else "ok")},
+            {"lbl": "Doorlooptijd", "val": f"{weken_tempo:.0f} wk" if weken_tempo == weken_tempo else "—",
+             "sub": "bij huidig tempo",
+             "cls": "risk" if weken_tempo > 26 else ("warn" if weken_tempo > 13 else "ok")},
+        ])
+        if "uren_buiten_populatie" in data.tempo.columns:
+            inleen = float(data.tempo["uren_buiten_populatie"].median())
+            if inleen > 0:
+                st.caption(f"Let op: hiernaast wordt er nog {fmt(inleen)} uur per week geboekt "
+                           f"door mensen zonder contracturen in Syntess (ingeleend of niet "
+                           f"vastgelegd). Die capaciteit zit niet in de cijfers hierboven.")
+
+        st.markdown("###### Waar je capaciteit nu aan opgaat")
+        fig = go.Figure()
+        fig.add_trace(go.Bar(x=["Per week"], y=[t["projecturen"]], name="Projecturen (lopend)",
+                             marker_color=NAVY2, width=[0.42]))
+        fig.add_trace(go.Bar(x=["Per week"], y=[t["indirecte_uren"]], name="Indirecte uren",
+                             marker_color=NAVY_LIGHT, width=[0.42]))
+        fig.add_trace(go.Bar(x=["Per week"], y=[max(0.0, vrij)], name="Vrije ruimte",
+                             marker_color=GREEN if vrij > 0 else RED, width=[0.42]))
+        fig.add_hline(y=cap_wk, line_dash="dot", line_color=NAVY,
+                      annotation_text=("effectief beschikbaar" if opts.get("seizoen")
+                                       else "bruto contracturen"),
+                      annotation_position="top left")
+        fig.update_layout(**PLOT, height=300, barmode="stack")
+        fig.update_yaxes(title="uren per week", gridcolor="#EEF0F7")
+        st.plotly_chart(fig, width="stretch")
+        st.caption("Het lopende tempo is gemeten op de geboekte uren, niet op de planning — "
+                   "vooruit wordt er in Syntess nauwelijks vastgelegd.")
+
+        with st.expander("Wat staat er wél vooruit gepland?"):
+            try:
+                import megens_source as _ms
+                wb = _ms.fetch_werkbon_planning(_ms.get_client())
+            except Exception:
+                wb = pd.DataFrame()
+            if len(wb):
+                wb = wb.sort_values("week_start").head(14)
+                figw = go.Figure()
+                figw.add_trace(go.Bar(x=wb["week_start"], y=wb["voorbereide_uren"],
+                                      name="Voorbereide uren", marker_color=GOLD))
+                figw.add_trace(go.Scatter(x=wb["week_start"], y=wb["werkbonnen"],
+                                          name="Aantal werkbonnen", yaxis="y2",
+                                          line=dict(color=NAVY2, width=2)))
+                figw.update_layout(**PLOT, height=280,
+                                   yaxis2=dict(overlaying="y", side="right", showgrid=False,
+                                               title="werkbonnen"))
+                figw.update_yaxes(title="uren", gridcolor="#EEF0F7")
+                st.plotly_chart(figw, width="stretch")
+                st.caption(f"Werkbonnen met een afspraakdatum vooruit: "
+                           f"{int(wb['werkbonnen'].sum())} stuks, samen "
+                           f"{fmt(wb['voorbereide_uren'].sum())} voorbereide uren. "
+                           f"Dat is een fractie van de {fmt(t['totaal'])} uur die er per week "
+                           f"werkelijk doorheen gaat — de rest wordt niet vooraf gepland.")
+            else:
+                st.caption("Geen vooruit ingeplande werkbonnen gevonden.")
+
+        _detail_blokken(data, profile, opts, weken, cap_rel, kolom)
+        caveat_box(data)
+        return
+
     kind, kop, toelichting = _antwoord(data, profile, opts, weken, v_w, c_w, beslag,
                                        cap_rel, kolom)
 
@@ -163,6 +287,12 @@ def render(data: PlanningData, profile: ClientProfile, opts: dict) -> None:
     st.caption(f"Alleen de {cap_rel['team'].nunique()} afdeling(en) met openstaand werk — "
                f"niet de hele organisatie. Rode staven: meer werk dan capaciteit.")
 
+    _detail_blokken(data, profile, opts, weken, cap_rel, kolom)
+    caveat_box(data)
+
+def _detail_blokken(data: PlanningData, profile: ClientProfile, opts: dict,
+                    weken, cap_rel, kolom) -> None:
+    """Knelpunten, heatmap per afdeling en bemensing — gedeeld door beide weergaven."""
     # ── de drie grootste knelpunten ──────────────────────────────────────────
     st.markdown("###### Waar het knelt")
     eff = (opts.get("efficiency_pct", 100) / 100) if opts.get("efficiency") else 1.0
@@ -247,5 +377,3 @@ def render(data: PlanningData, profile: ClientProfile, opts: dict) -> None:
                           .sort_values("contracturen", ascending=False))
             per_team.columns = ["Medewerkers", "Ingeleend", "Contracturen"]
             st.dataframe(per_team, width="stretch")
-
-    caveat_box(data)

@@ -226,6 +226,76 @@ def fetch_calculatie_per_project(client) -> pd.DataFrame:
         return pd.DataFrame(columns=["project_key", "calculatie_uren"])
 
 
+def fetch_tempo_per_week(client, weken: int = 12) -> pd.DataFrame:
+    """Werkelijk geboekte uren per week — het realisatietempo.
+
+    Alleen volledige weken: de laatste twee weken vallen af omdat uren daar nog
+    nageboekt worden (zichtbaar als een kunstmatige terugval). Projecturen en
+    indirecte uren apart, want alleen de projecturen concurreren met het
+    openstaande projectwerk.
+
+    Beperkt tot **dezelfde populatie als de capaciteit**: medewerkers met contracturen.
+    Dat is essentieel — er boeken ook mensen zónder contracturen (inleen/onderaanneming);
+    die uren afzetten tegen de contractcapaciteit van 154 mensen zou appels met peren zijn.
+    Hun uren komen apart terug als `uren_buiten_populatie`.
+    """
+    sql = f'''
+        WITH cap AS (
+            SELECT DISTINCT "MedewerkerKey" FROM planning."Geplande en contracturen medewerkers"
+            WHERE TRIM("Type") = 'Contracturen'
+        )
+        SELECT date_trunc('week', u."Uitvoeringsdatum")::date AS week_start,
+               SUM(CASE WHEN c."MedewerkerKey" IS NOT NULL AND u."ProjectKey" IS NOT NULL
+                        THEN u."Aantal" ELSE 0 END) AS projecturen,
+               SUM(CASE WHEN c."MedewerkerKey" IS NOT NULL AND u."ProjectKey" IS NULL
+                        THEN u."Aantal" ELSE 0 END) AS indirecte_uren,
+               SUM(CASE WHEN c."MedewerkerKey" IS NULL THEN u."Aantal" ELSE 0 END)
+                        AS uren_buiten_populatie
+        FROM uren."Geboekte Uren" u
+        LEFT JOIN cap c ON c."MedewerkerKey" = u."MedewerkerKey"
+        WHERE TRIM(u."Status") = 'Definitief'
+          AND u."Uitvoeringsdatum" >= CURRENT_DATE - {int(weken) * 7 + 14}
+          AND u."Uitvoeringsdatum" < CURRENT_DATE - 14
+        GROUP BY 1 ORDER BY 1
+    '''
+    df = _q(client, sql)
+    if not len(df):
+        return df
+    df["week_start"] = pd.to_datetime(df["week_start"])
+    for c in ("projecturen", "indirecte_uren", "uren_buiten_populatie"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    return df
+
+
+def fetch_werkbon_planning(client) -> pd.DataFrame:
+    """Vooruit ingeplande werkbonnen (afspraakdatum) met voorbereide arbeid.
+
+    Dit is de uitvoeringsplanning die Megens wél vooruit vastlegt — kortcyclisch
+    (enkele weken) en met beperkte voorbereide uren.
+    """
+    sql = '''
+        SELECT date_trunc('week', w."AfspraakDatum")::date AS week_start,
+               COUNT(DISTINCT w."WerkbonDocumentKey") AS werkbonnen,
+               COALESCE(SUM(a."Aantal"), 0) AS voorbereide_uren
+        FROM werkbonnen."Werkbonnen" w
+        LEFT JOIN werkbonnen."Werkbonparagrafen" wp
+               ON wp."WerkbonDocumentKey" = w."WerkbonDocumentKey"
+        LEFT JOIN werkbonnen."Werkvoorbereiding arbeid" a
+               ON a."WerkbonparagraafKey" = wp."WerkbonparagraafKey"
+        WHERE w."AfspraakDatum" >= CURRENT_DATE
+        GROUP BY 1 ORDER BY 1
+    '''
+    try:
+        df = _q(client, sql)
+    except Exception:
+        return pd.DataFrame(columns=["week_start", "werkbonnen", "voorbereide_uren"])
+    if len(df):
+        df["week_start"] = pd.to_datetime(df["week_start"])
+        for c in ("werkbonnen", "voorbereide_uren"):
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    return df
+
+
 def fetch_booked_per_week_project(client, project_key: int) -> pd.DataFrame:
     """Geboekte uren per week voor één project (drilldown)."""
     sql = f'''

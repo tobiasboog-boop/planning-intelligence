@@ -26,9 +26,14 @@ CAVEATS = [
     "Syntess bevat bij Megens **geen verzuim- of verlofregistratie** "
     "(`uren.\"Medewerkers verzuim\"` is leeg) en contracturen negeren feestdagen. "
     "Daarom wordt de capaciteit modelmatig gecorrigeerd (zie seizoenscorrectie).",
-    "De vraag is het **nog niet ingeplande** werk uit de werkvoorbereiding "
-    "(44 open regels, methode 2), niet het totale werkpakket — de planregel-kolommen "
-    "zijn in de bronview nog niet gevuld.",
+    "**Vooruit wordt er nauwelijks gepland in Syntess.** De projectplanning bevat vooruit "
+    "geen planregels, en de werkbonplanning reikt maar enkele weken vooruit met beperkte "
+    "voorbereide uren. Er wordt wél volop gewerkt — het wordt alleen niet vooraf "
+    "vastgelegd. Daarom is de vrije ruimte hier afgeleid van het **werkelijke "
+    "realisatietempo**, niet van de planning.",
+    "Het openstaande werk is de selectie die het rapport *Begrotingsuren per project* "
+    "zelf toont (montagetaken, actuele hoofdprojecten in fase Opdracht, einddatum in de "
+    "toekomst). Ons getal wijkt 3,9% af van Syntess' eigen \"Te plannen\".",
 ]
 
 
@@ -93,8 +98,9 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
         realisatie=leeg("realisatie"),   # per project op aanvraag (drilldown)
         projecten=projecten,
         medewerkers=medewerkers,
-        prognose=leeg("prognose"),       # bronkolommen nog NULL bij Megens
+        prognose=leeg("prognose"),       # niet vooruit gevuld bij Megens
         meta=meta,
+        tempo=ms.fetch_tempo_per_week(c),
     )
 
 
