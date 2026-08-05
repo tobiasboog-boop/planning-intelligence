@@ -121,7 +121,8 @@ def fetch_capacity_per_week(client) -> pd.DataFrame:
                date_trunc('week', cu."Datum"::timestamp)::date AS week_start,
                SUM(CASE WHEN TRIM(cu."Type")='Contracturen' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS capaciteit_uren,
                SUM(CASE WHEN TRIM(cu."Type")='Ongepland'    THEN cu."Aantal Uur"::numeric ELSE 0 END) AS vrije_uren,
-               COUNT(DISTINCT cu."MedewerkerKey") AS n_mw
+               COUNT(DISTINCT cu."MedewerkerKey") AS n_mw,
+               COUNT(DISTINCT cu."Datum"::date) AS n_dagen
         FROM planning."Geplande en contracturen medewerkers" cu
         JOIN stam."Medewerkers" m ON m."MedewerkerKey" = cu."MedewerkerKey"
         JOIN stam."Afdelingen" a  ON a."AfdelingKey"   = m."AfdelingKey"
@@ -130,7 +131,7 @@ def fetch_capacity_per_week(client) -> pd.DataFrame:
     '''
     df = _q(client, sql)
     df["week_start"] = pd.to_datetime(df["week_start"])
-    for c in ("capaciteit_uren", "vrije_uren", "n_mw"):
+    for c in ("capaciteit_uren", "vrije_uren", "n_mw", "n_dagen"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     return df
 

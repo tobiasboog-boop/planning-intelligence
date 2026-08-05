@@ -56,7 +56,7 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
 
     # ── capaciteit (+ seizoenscorrectie) ─────────────────────────────────────
     capaciteit = cap.rename(columns={"afdeling": "team", "capaciteit_uren": "contract_uren"})
-    capaciteit = capaciteit[["team", "week_start", "contract_uren", "n_mw"]]
+    capaciteit = capaciteit[["team", "week_start", "contract_uren", "n_mw", "n_dagen"]]
     if seizoen:
         capaciteit = sn.pas_toe(capaciteit, params)
     else:

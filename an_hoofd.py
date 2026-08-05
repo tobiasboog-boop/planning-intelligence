@@ -63,6 +63,24 @@ def _basis(data: PlanningData, profile: ClientProfile, opts: dict):
     return weken, v_w, c_w, bruto_w, beslag, cap_rel, kolom
 
 
+def _cap_reeks(data, opts, weken) -> pd.Series:
+    """Effectieve capaciteit per week van de HELE ploeg.
+
+    Bewust niet gefilterd op 'teams met openstaand werk': het tempo wordt over de
+    hele capaciteitspopulatie gemeten, dus de capaciteit moet dat ook zijn. Anders
+    vergelijk je het tempo van iedereen met de capaciteit van een paar afdelingen.
+    """
+    kolom = capaciteit_kolom(data, opts.get("seizoen", False))
+    eff = (opts.get("efficiency_pct", 100) / 100) if opts.get("efficiency") else 1.0
+    cap = data.capaciteit
+    if "n_dagen" in cap.columns:
+        # Randweken van het contracturen-venster bevatten maar 2-4 werkdagen. Die als
+        # volwaardige week meetekenen ziet uit als een capaciteitsinstorting; eruit.
+        dagen = cap.groupby("week_start")["n_dagen"].max()
+        cap = cap[cap["week_start"].isin(set(dagen[dagen >= 5].index))]
+    return per_week(cap, kolom, weken) * eff
+
+
 def _tempo_antwoord(data, opts, weken, c_w):
     """Conclusie op basis van het WERKELIJKE tempo.
 
@@ -72,7 +90,8 @@ def _tempo_antwoord(data, opts, weken, c_w):
     t = data.tempo_per_week()
     if not t:
         return None
-    cap_wk = float(c_w.mean()) if len(c_w) else 0.0
+    cap_reeks = _cap_reeks(data, opts, weken)
+    cap_wk = float(cap_reeks[cap_reeks > 0].median()) if (cap_reeks > 0).any() else 0.0
     bezet = t["totaal"]
     vrij = cap_wk - bezet
     openstaand = float(data.vraag["uren"].sum()) if len(data.vraag) else 0.0
@@ -211,23 +230,8 @@ def render(data: PlanningData, profile: ClientProfile, opts: dict) -> None:
                            f"door mensen zonder contracturen in Syntess (ingeleend of niet "
                            f"vastgelegd). Die capaciteit zit niet in de cijfers hierboven.")
 
-        st.markdown("###### Waar je capaciteit nu aan opgaat")
-        fig = go.Figure()
-        fig.add_trace(go.Bar(x=["Per week"], y=[t["projecturen"]], name="Projecturen (lopend)",
-                             marker_color=NAVY2, width=[0.42]))
-        fig.add_trace(go.Bar(x=["Per week"], y=[t["indirecte_uren"]], name="Indirecte uren",
-                             marker_color=NAVY_LIGHT, width=[0.42]))
-        fig.add_trace(go.Bar(x=["Per week"], y=[max(0.0, vrij)], name="Vrije ruimte",
-                             marker_color=GREEN if vrij > 0 else RED, width=[0.42]))
-        fig.add_hline(y=cap_wk, line_dash="dot", line_color=NAVY,
-                      annotation_text=("effectief beschikbaar" if opts.get("seizoen")
-                                       else "bruto contracturen"),
-                      annotation_position="top left")
-        fig.update_layout(**PLOT, height=300, barmode="stack")
-        fig.update_yaxes(title="uren per week", gridcolor="#EEF0F7")
-        st.plotly_chart(fig, width="stretch")
-        st.caption("Het lopende tempo is gemeten op de geboekte uren, niet op de planning — "
-                   "vooruit wordt er in Syntess nauwelijks vastgelegd.")
+        st.markdown("###### Verleden en vooruit: wat gaat er per week doorheen?")
+        _tempo_grafiek(data, opts, weken, t, cap_wk, vrij)
 
         with st.expander("Wat staat er wél vooruit gepland?"):
             try:
@@ -377,3 +381,53 @@ def _detail_blokken(data: PlanningData, profile: ClientProfile, opts: dict,
                           .sort_values("contracturen", ascending=False))
             per_team.columns = ["Medewerkers", "Ingeleend", "Contracturen"]
             st.dataframe(per_team, width="stretch")
+
+def _tempo_grafiek(data, opts, weken, t, cap_wk, vrij) -> None:
+    """Tijdreeks: geboekte uren per week (verleden) en beschikbare capaciteit (vooruit).
+
+    Weken op de x-as — een planningsbeeld zonder tijdas zegt niets. Links wat er
+    werkelijk door de ploeg ging, rechts wat er beschikbaar is (met de zomerdip),
+    met het huidige tempo als stippellijn zodat de vrije ruimte zichtbaar wordt.
+    """
+    hist = data.tempo.copy().sort_values("week_start")
+    cap = _cap_reeks(data, opts, weken)
+    cap = cap[cap > 0]
+
+    fig = go.Figure()
+    if len(hist):
+        fig.add_trace(go.Bar(x=hist["week_start"], y=hist["projecturen"],
+                             name="Projecturen (geboekt)", marker_color=NAVY2))
+        fig.add_trace(go.Bar(x=hist["week_start"], y=hist["indirecte_uren"],
+                             name="Indirecte uren (geboekt)", marker_color=NAVY_LIGHT))
+        if "uren_buiten_populatie" in hist.columns and hist["uren_buiten_populatie"].sum() > 0:
+            fig.add_trace(go.Bar(x=hist["week_start"], y=hist["uren_buiten_populatie"],
+                                 name="Ingeleend (geen contracturen)", marker_color=GREY))
+    if len(cap):
+        label = ("Beschikbaar na verlof en feestdagen" if opts.get("seizoen")
+                 else "Beschikbaar (bruto contracturen)")
+        fig.add_trace(go.Scatter(x=list(cap.index), y=cap.values, name=label, mode="lines",
+                                 line=dict(color=NAVY, width=2.5),
+                                 fill="tozeroy", fillcolor="rgba(22,19,111,0.06)"))
+        fig.add_trace(go.Scatter(x=list(cap.index), y=[t["totaal"]] * len(cap),
+                                 name="Huidig tempo (mediaan)", mode="lines",
+                                 line=dict(color=GOLD, width=2, dash="dash")))
+
+    # scheidslijn tussen gemeten verleden en beschikbare toekomst
+    if len(cap):
+        grens = pd.Timestamp(cap.index.min())
+        fig.add_shape(type="line", x0=grens, x1=grens, xref="x", y0=0, y1=1, yref="paper",
+                      line=dict(color=GREY, width=1, dash="dot"))
+        fig.add_annotation(x=grens, xref="x", y=1.0, yref="paper", yanchor="bottom",
+                           text="vanaf hier beschikbaar", showarrow=False,
+                           font=dict(size=10, color="#8A8DB0"))
+
+    fig.update_layout(**PLOT, height=360, barmode="stack")
+    fig.update_yaxes(title="uren per week", gridcolor="#EEF0F7")
+    fig.update_xaxes(gridcolor="#F5F6FA", dtick=7 * 24 * 3600 * 1000 * 2, tickformat="%d-%m")
+    st.plotly_chart(fig, width="stretch")
+    uitleg = ("Links de weken die al geboekt zijn (dat is het werkelijke tempo), rechts de "
+              "beschikbare capaciteit per week. Het verschil tussen de capaciteitslijn en de "
+              "gestippelde tempolijn is je vrije ruimte")
+    uitleg += (f" &mdash; nu {fmt(vrij)} uur per week." if vrij > 0
+               else f" &mdash; die is er nu niet ({fmt(vrij)} uur).")
+    st.caption(uitleg)
