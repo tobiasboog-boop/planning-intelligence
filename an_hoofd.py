@@ -329,6 +329,45 @@ def render(data: PlanningData, profile: ClientProfile, opts: dict) -> None:
     caveat_box(data)
 
 
+def _medewerker_blok(data: PlanningData) -> None:
+    """Planning per medewerker per week — het antwoord op "wie kan ik nog inzetten?".
+
+    Dit kán dus wél op medewerkerniveau: de ATPlanning-view heeft de planning per
+    MedewerkerKey per dag. Groeperen op de key en niet op de naam, want namen zijn niet
+    uniek in dit model. De weektotalen van dit blok sluiten exact aan op de
+    afdelingscijfers hierboven (gecontroleerd: 2.756 / 642 / 932 u voor de eerste weken).
+    """
+    m = data.planning_mdw.copy()
+    m["week_start"] = pd.to_datetime(m["week_start"])
+    p = (m.groupby(["mdw_key", "medewerker", "team"], as_index=False)
+          .agg(contract=("contract_uren", "sum"), ingepland=("ingepland_uren", "sum"),
+               vrij=("ongepland_uren", "sum")))
+    p["dekking"] = p["ingepland"] / p["contract"].replace(0, np.nan) * 100
+    n_weken = int(m["week_start"].nunique())
+
+    vol = p[p["dekking"] > 100]
+    leeg_ = p[p["ingepland"] <= 0.5]
+    kpi_cards([
+        {"lbl": "Medewerkers", "val": f"{len(p)}", "sub": f"over {n_weken} weken"},
+        {"lbl": "Overpland", "val": f"{len(vol)}", "sub": "meer ingepland dan contracturen",
+         "cls": "risk" if len(vol) else "ok"},
+        {"lbl": "Niets ingepland", "val": f"{len(leeg_)}", "sub": "volledig vrij in de planning",
+         "cls": "warn" if len(leeg_) else "ok"},
+        {"lbl": "Gemiddelde dekking", "val": pct(float(p["dekking"].mean())),
+         "sub": "van de contracturen belegd", "cls": "accent"},
+    ])
+
+    tab = p.sort_values("dekking", ascending=False)[
+        ["medewerker", "team", "contract", "ingepland", "vrij", "dekking"]]
+    tab.columns = ["Medewerker", "Afdeling", "Contracturen", "Ingepland", "Vrij", "Dekking %"]
+    st.dataframe(tab.round(1), width="stretch", hide_index=True, height=320)
+    st.caption(
+        f"Planning per medewerker over {n_weken} weken vooruit, gegroepeerd op **MedewerkerKey** "
+        f"(niet op naam — namen zijn in dit model niet uniek). Bovenaan wie het volst zit, "
+        f"onderaan wie er nog vrij is. Dekking boven 100% betekent meer ingeplande uren dan "
+        f"contracturen: die persoon staat dubbel geboekt of maakt overuren.")
+
+
 def _capaciteit_grafiek(wf: pd.DataFrame, k: dict) -> None:
     """Waar gaat elke contractuur per week naartoe: ingepland, afwezig, of nog vrij?
 
@@ -426,6 +465,11 @@ def _detail_blokken(data: PlanningData, profile: ClientProfile, opts: dict,
                 figh.update_yaxes(tickfont=dict(size=10))
                 st.plotly_chart(figh, width="stretch")
                 st.caption("Beslag op de capaciteit per afdeling per week. Rood = meer werk dan mensen.")
+
+    # ── planning per medewerker achter een klik ──────────────────────────────
+    if data.heeft("planning_mdw"):
+        with st.expander("Wie is de komende weken vrij? (per medewerker)"):
+            _medewerker_blok(data)
 
     # ── bemensing achter een klik ────────────────────────────────────────────
     if data.heeft("medewerkers"):

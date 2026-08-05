@@ -175,6 +175,43 @@ def fetch_capacity_per_week(client) -> pd.DataFrame:
     return df
 
 
+def fetch_planning_per_medewerker(client, weken: int = 8) -> pd.DataFrame:
+    """Per medewerker per week: contracturen, ingepland, ongepland, afwezig.
+
+    Dit kán dus wél op medewerkerniveau — de planning staat per `MedewerkerKey` en per dag
+    in de ATPlanning-view. Bewust groeperen op de **key**, niet op `Medewerker omschrijving`
+    zoals het rapport doet: die omschrijving is niet uniek ("Verbruggen J." staat voor 182
+    verschillende sleutels), waardoor uren van verschillende mensen op één naam samenvallen.
+    Label = volledige naam + de key, zodat het herleidbaar blijft.
+    """
+    sql = f'''
+        SELECT cu."MedewerkerKey" AS mdw_key,
+               TRIM(regexp_replace(m."Volledige naam", '[[:space:]]+', ' ', 'g')) AS medewerker,
+               TRIM(a."Afdeling") AS afdeling,
+               date_trunc('week', cu."Datum"::timestamp)::date AS week_start,
+               SUM(CASE WHEN TRIM(cu."Type")='Contracturen' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS contract_uren,
+               SUM(CASE WHEN TRIM(cu."Type") IN ('Project','Werkbon') THEN cu."Aantal Uur"::numeric ELSE 0 END) AS ingepland_uren,
+               SUM(CASE WHEN TRIM(cu."Type")='Ongepland' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS ongepland_uren,
+               SUM(CASE WHEN TRIM(cu."Type")='Indirecte taak' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS indirect_uren
+        FROM planning."Geplande en contracturen medewerkers ATPlanning" cu
+        JOIN stam."Medewerkers" m ON m."MedewerkerKey" = cu."MedewerkerKey"
+        JOIN stam."Afdelingen" a  ON a."AfdelingKey"   = m."AfdelingKey"
+        WHERE cu."Datum" IS NOT NULL
+          AND cu."Datum"::date >= date_trunc('week', CURRENT_DATE)
+          AND cu."Datum"::date < date_trunc('week', CURRENT_DATE) + INTERVAL '{int(weken)} weeks'
+          AND TRIM(m."Medewerker Status") = '{PBIP_MDW_STATUS}'
+          AND TRIM(m."Projectenplanning (J/N)") = '{PBIP_MDW_PROJECTPLANNING}'
+          AND TRIM(m."Ingeleend (J/N)") = '{PBIP_MDW_INGELEEND}'
+          AND EXTRACT(ISODOW FROM cu."Datum"::timestamp) BETWEEN 1 AND 5
+        GROUP BY 1,2,3,4 ORDER BY 2,4
+    '''
+    df = _q(client, sql)
+    df["week_start"] = pd.to_datetime(df["week_start"])
+    for c in ("contract_uren", "ingepland_uren", "ongepland_uren", "indirect_uren"):
+        df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    return df
+
+
 def fetch_medewerkers(client) -> pd.DataFrame:
     """Per medewerker: afdeling, intern/extern, planning-vlag, contracturen over de horizon."""
     sql = '''

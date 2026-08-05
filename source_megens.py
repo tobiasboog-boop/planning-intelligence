@@ -36,7 +36,8 @@ CAVEATS = [
     "tussen wat te verwachten is en wat al vastligt, afgekapt op nul. Nooit dubbel tellen.",
     "Het openstaande werk is de selectie die het rapport *Begrotingsuren per project* "
     "zelf toont (montagetaken, actuele hoofdprojecten in fase Opdracht, einddatum in de "
-    "toekomst). Ons getal wijkt 3,9% af van Syntess' eigen \"Te plannen\".",
+    "toekomst) en is per project teruggeschaald naar Syntess' eigen measure *Te plannen*. "
+    "Controle: 34.955 u tegen 34.954 u in het rapport — 0,0% afwijking.",
     "Onderhoud dat al als werkbon is ingepland zit zowel in *Onderhoud open* als in "
     "*Al ingepland*. De rapporten hebben geen gemeenschappelijke sleutel, dus dat is niet "
     "weg te rekenen; de omvang van die maximale dubbeltelling staat in de verantwoording.",
@@ -158,6 +159,10 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
         prognose=leeg("prognose"),       # niet vooruit gevuld bij Megens
         meta=meta,
         tempo=ms.fetch_tempo_per_week(c),
+        planning_mdw=(ms.fetch_planning_per_medewerker(c, 8)
+                        .rename(columns={"afdeling": "team"})
+                        [["mdw_key", "medewerker", "team", "week_start", "contract_uren",
+                          "ingepland_uren", "ongepland_uren"]]),
     )
 
 

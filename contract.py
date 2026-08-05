@@ -35,6 +35,10 @@ SCHEMA = {
     # Nodig omdat planning niet altijd vooruit wordt vastgelegd — dan is het tempo
     # waarmee gewerkt wordt de enige eerlijke maat voor wat er nog bij kan.
     "tempo": ["week_start", "projecturen", "indirecte_uren"],
+    # Planning per medewerker per week. Apart frame omdat niet elke klant de
+    # planningsmodule gebruikt; blijft dan leeg en de weergave degradeert netjes.
+    "planning_mdw": ["mdw_key", "medewerker", "team", "week_start", "contract_uren",
+                     "ingepland_uren", "ongepland_uren"],
 }
 
 
@@ -71,6 +75,7 @@ class PlanningData:
     prognose: pd.DataFrame
     meta: SourceMeta
     tempo: pd.DataFrame = field(default_factory=lambda: leeg("tempo"))
+    planning_mdw: pd.DataFrame = field(default_factory=lambda: leeg("planning_mdw"))
 
     def tempo_per_week(self, weken: int = 12) -> dict:
         """Mediaan projecturen en indirecte uren per week over de laatste `weken`
