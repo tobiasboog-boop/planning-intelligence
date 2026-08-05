@@ -126,6 +126,37 @@ def pas_toe(capaciteit: pd.DataFrame, p: SeasonParams | None = None,
     return out
 
 
+def aanvulling(capaciteit: pd.DataFrame, p: SeasonParams | None = None) -> pd.DataFrame:
+    """Vul de nog-niet-aangevraagde afwezigheid aan, zonder dubbel te tellen.
+
+    Syntess registreert verlof, ADV, feestdagen en ziekte vooruit als indirecte taak —
+    maar alleen wat al is aangevraagd. Dichtbij is dat compleet, verder weg vrijwel niets
+    (bij Megens: 1.202 u in de zomerweken, 140 u eind september). De urencalculator uit
+    het leerportaal weet wat er normaal gesproken nog bij komt.
+
+    Daarom: verwachte afwezigheid volgens het model MINUS wat al geregistreerd staat,
+    afgekapt op nul. Nooit optellen bij wat de ERP al weet.
+
+    Voegt toe: `verwacht_verlof`, `extra_verlof`, `vrij_gecorrigeerd`.
+    """
+    p = p or SeasonParams()
+    out = capaciteit.copy()
+    if not len(out):
+        for k in ("verwacht_verlof", "extra_verlof", "vrij_gecorrigeerd"):
+            out[k] = []
+        return out
+
+    f = week_factoren(sorted(out["week_start"].unique()), p)
+    factor = out["week_start"].map(f).fillna(float(np.nanmean(f.values)))
+    # verwachte afwezigheid = deel van de contracturen dat volgens het model wegvalt
+    out["verwacht_verlof"] = out["contract_uren"] * (1.0 - factor)
+    geregistreerd = out["verlof_uren"] if "verlof_uren" in out.columns else 0.0
+    out["extra_verlof"] = (out["verwacht_verlof"] - geregistreerd).clip(lower=0)
+    basis = out["ongepland_uren"] if "ongepland_uren" in out.columns else out["contract_uren"]
+    out["vrij_gecorrigeerd"] = (basis - out["extra_verlof"]).clip(lower=0)
+    return out
+
+
 def toelichting(p: SeasonParams | None = None, jaar: int = 2026) -> str:
     """Korte, eerlijke uitleg voor in de UI."""
     p = p or SeasonParams()

@@ -128,21 +128,38 @@ def fetch_demand_per_week(client) -> pd.DataFrame:
 
 # ── AANBOD (supply / capaciteit) ─────────────────────────────────────────────
 def fetch_capacity_per_week(client) -> pd.DataFrame:
-    """Contract- (bruto capaciteit) en vrije uren per afdeling per week.
-    Bron: planning.'Geplande en contracturen medewerkers' Type=Contracturen/Ongepland,
-    medewerker->afdeling via stam.Medewerkers.AfdelingKey -> stam.Afdelingen.
-    NB: geen verzuim/verlof in de bron -> contract = bruto (licht overschat)."""
+    """Contracturen, ingeplande en ongeplande uren per afdeling per week.
+
+    Bron is de **ATPlanning**-view, niet `planning."Geplande en contracturen medewerkers"`.
+    Die laatste (en ook de SSM-variant die de rapporten gebruiken) mist de planningsregels:
+    Type Project/Werkbon/Indirecte taak stopt daar in 2018 respectievelijk ontbreekt, waardoor
+    Ongepland gelijk wordt aan Contracturen en het lijkt of er niets is ingepland. ATPlanning
+    heeft ze wél actueel (Werkbon t/m dec-2026, Project t/m apr-2027, Indirect t/m 2029),
+    per MedewerkerKey. Geverifieerd 5-8-2026.
+
+    `verlof_uren` is de al geregistreerde afwezigheid (verlof, ADV, roostervrij, feestdagen,
+    ziekte, scholing). Nodig om de seizoenscorrectie te kunnen aanvullen zonder dubbel te tellen.
+    """
     sql = f'''
         SELECT TRIM(a."Afdeling") AS afdeling,
                date_trunc('week', cu."Datum"::timestamp)::date AS week_start,
                SUM(CASE WHEN TRIM(cu."Type")='Contracturen' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS capaciteit_uren,
-               SUM(CASE WHEN TRIM(cu."Type")='Ongepland'    THEN cu."Aantal Uur"::numeric ELSE 0 END) AS vrije_uren,
+               SUM(CASE WHEN TRIM(cu."Type")='Ongepland'    THEN cu."Aantal Uur"::numeric ELSE 0 END) AS ongepland_uren,
+               SUM(CASE WHEN TRIM(cu."Type") IN ('Project','Werkbon') THEN cu."Aantal Uur"::numeric ELSE 0 END) AS ingepland_uren,
+               SUM(CASE WHEN TRIM(cu."Type")='Project' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS gepland_project_uren,
+               SUM(CASE WHEN TRIM(cu."Type")='Werkbon' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS gepland_werkbon_uren,
+               SUM(CASE WHEN TRIM(cu."Type")='Indirecte taak' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS indirect_uren,
+               SUM(CASE WHEN TRIM(cu."Type")='Indirecte taak' AND (
+                        cu."Taak" ILIKE '%verlof%' OR cu."Taak" ILIKE '%ADV%'
+                     OR cu."Taak" ILIKE '%roostervrij%' OR cu."Taak" ILIKE '%feestdag%'
+                     OR cu."Taak" ILIKE '%ziek%' OR cu."Taak" ILIKE '%scholing%')
+                    THEN cu."Aantal Uur"::numeric ELSE 0 END) AS verlof_uren,
                COUNT(DISTINCT cu."MedewerkerKey") AS n_mw,
                COUNT(DISTINCT cu."Datum"::date) AS n_dagen
-        FROM planning."Geplande en contracturen medewerkers" cu
+        FROM planning."Geplande en contracturen medewerkers ATPlanning" cu
         JOIN stam."Medewerkers" m ON m."MedewerkerKey" = cu."MedewerkerKey"
         JOIN stam."Afdelingen" a  ON a."AfdelingKey"   = m."AfdelingKey"
-        WHERE TRIM(cu."Type") IN ('Contracturen','Ongepland') AND cu."Datum" IS NOT NULL
+        WHERE cu."Datum" IS NOT NULL
           AND TRIM(m."Medewerker Status") = '{PBIP_MDW_STATUS}'
           AND TRIM(m."Projectenplanning (J/N)") = '{PBIP_MDW_PROJECTPLANNING}'
           AND TRIM(m."Ingeleend (J/N)") = '{PBIP_MDW_INGELEEND}'
@@ -151,7 +168,9 @@ def fetch_capacity_per_week(client) -> pd.DataFrame:
     '''
     df = _q(client, sql)
     df["week_start"] = pd.to_datetime(df["week_start"])
-    for c in ("capaciteit_uren", "vrije_uren", "n_mw", "n_dagen"):
+    for c in ("capaciteit_uren", "ongepland_uren", "ingepland_uren",
+              "gepland_project_uren", "gepland_werkbon_uren",
+              "indirect_uren", "verlof_uren", "n_mw", "n_dagen"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     return df
 

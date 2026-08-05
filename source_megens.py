@@ -14,8 +14,8 @@ from contract import PlanningData, SourceMeta, leeg
 BRONNEN = [
     ("Benodigde / begrote uren", 'maatwerk."Begrotingsuren" + "Begrotinguren per werkdag"',
      "vraag per project per week (methode 2)"),
-    ("Beschikbaarheid / capaciteit", 'planning."Geplande en contracturen medewerkers"',
-     "contracturen per medewerker per week"),
+    ("Beschikbaarheid / capaciteit", 'planning."Geplande en contracturen medewerkers ATPlanning"',
+     "contracturen, ingeplande en ongeplande uren per medewerker per week"),
     ("Werkelijk bestede uren", 'uren."Geboekte Uren"', "geboekt per project (definitief)"),
     ("Teams & medewerkers", 'stam."Afdelingen" + stam."Medewerkers"',
      "team-mapping + intern/extern"),
@@ -23,17 +23,23 @@ BRONNEN = [
 ]
 
 CAVEATS = [
-    "Syntess bevat bij Megens **geen verzuim- of verlofregistratie** "
-    "(`uren.\"Medewerkers verzuim\"` is leeg) en contracturen negeren feestdagen. "
-    "Daarom wordt de capaciteit modelmatig gecorrigeerd (zie seizoenscorrectie).",
-    "**Vooruit wordt er nauwelijks gepland in Syntess.** De projectplanning bevat vooruit "
-    "geen planregels, en de werkbonplanning reikt maar enkele weken vooruit met beperkte "
-    "voorbereide uren. Er wordt wél volop gewerkt — het wordt alleen niet vooraf "
-    "vastgelegd. Daarom is de vrije ruimte hier afgeleid van het **werkelijke "
-    "realisatietempo**, niet van de planning.",
+    "**De planning zit niet in de views die de Power BI-rapporten gebruiken.** In "
+    "`planning.\"Geplande en contracturen medewerkers\"` stopt type Project/Werkbon in 2018 "
+    "en in de SSM-variant ontbreken die regels volledig; daardoor is *Ongepland* daar "
+    "altijd gelijk aan de contracturen en lijkt er niets ingepland. Deze tool leest "
+    "`… ATPlanning`, waar de planning wél actueel in staat. Gemeld aan Mark en Dolf.",
+    "**De planning dooft uit met de afstand.** Gemiddeld is 35% van de capaciteit belegd in "
+    "de eerste 8 weken, 14% in week 9–26 en 2% daarna. Vrije ruimte verder vooruit is dus "
+    "een bovengrens: er is niets vastgelegd, wat niet hetzelfde is als niets te doen.",
+    "**Verlof wordt vooruit alleen geregistreerd als het is aangevraagd** — dichtbij vrijwel "
+    "compleet, verderop leeg. De seizoenscorrectie vult daarom alleen het verschil aan "
+    "tussen wat te verwachten is en wat al vastligt, afgekapt op nul. Nooit dubbel tellen.",
     "Het openstaande werk is de selectie die het rapport *Begrotingsuren per project* "
     "zelf toont (montagetaken, actuele hoofdprojecten in fase Opdracht, einddatum in de "
     "toekomst). Ons getal wijkt 3,9% af van Syntess' eigen \"Te plannen\".",
+    "Onderhoud dat al als werkbon is ingepland zit zowel in *Onderhoud open* als in "
+    "*Al ingepland*. De rapporten hebben geen gemeenschappelijke sleutel, dus dat is niet "
+    "weg te rekenen; de omvang van die maximale dubbeltelling staat in de verantwoording.",
 ]
 
 
@@ -55,6 +61,18 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
     vraag = vraag[["project_key", "project", "team", "week_start", "uren"]].copy()
     vraag["soort"] = "Projecten"
 
+    # De dagspreiding verdeelt de **volledige begroting** over de werkdagen (37.450 u), niet
+    # het nog te plannen deel. Daarin zit dus ook de 2.496 u die al ingepland staat. Het
+    # tijdpatroon van die spreiding is bruikbaar, het volume niet. Daarom per project
+    # terugschalen naar Syntess' eigen measure "Te plannen" (= begroot - totaal gepland).
+    # Uitkomst sluit daarmee exact aan op het rapport in plaats van 7% te hoog uit te komen.
+    if len(budget) and "te_plannen_syntess" in budget.columns:
+        b = budget.set_index("project_key")
+        ratio = (pd.to_numeric(b["te_plannen_syntess"], errors="coerce")
+                 / pd.to_numeric(b["begrotingsuren"], errors="coerce").replace(0, pd.NA))
+        ratio = ratio.clip(lower=0, upper=1)
+        vraag["uren"] = vraag["uren"] * vraag["project_key"].map(ratio).fillna(1.0).astype(float)
+
     onderhoud = ms.fetch_onderhoud_per_week(c)
     if len(onderhoud):
         oh = pd.DataFrame({
@@ -66,7 +84,10 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
 
     # ── capaciteit (+ seizoenscorrectie) ─────────────────────────────────────
     capaciteit = cap.rename(columns={"afdeling": "team", "capaciteit_uren": "contract_uren"})
-    capaciteit = capaciteit[["team", "week_start", "contract_uren", "n_mw", "n_dagen"]]
+    capaciteit = capaciteit[["team", "week_start", "contract_uren", "ongepland_uren",
+                             "ingepland_uren", "gepland_project_uren",
+                             "gepland_werkbon_uren", "indirect_uren", "verlof_uren",
+                             "n_mw", "n_dagen"]]
     if seizoen:
         capaciteit = sn.pas_toe(capaciteit, params)
     else:
@@ -91,6 +112,30 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
     medewerkers = medewerkers[["mdw_key", "medewerker", "team", "type",
                                "contract_uren", "in_planning"]]
 
+    # ── Gebruikt deze klant de planningsmodule? ──────────────────────────────
+    # Zo ja, dan is 'Ongepland' het antwoord van het systeem zelf op "wat is nog vrij".
+    # Zo nee, dan is Ongepland gelijk aan de contracturen en zegt het niets; dan valt de
+    # tool terug op het realisatietempo. Zo werkt het model bij elke klant.
+    vandaag = pd.Timestamp.today().normalize()
+    vooruit_cap = capaciteit[pd.to_datetime(capaciteit["week_start"]) >= vandaag]
+    ingepland_vooruit = float(vooruit_cap["ingepland_uren"].sum()) if len(vooruit_cap) else 0.0
+    contract_vooruit = float(vooruit_cap["contract_uren"].sum()) if len(vooruit_cap) else 0.0
+    aandeel = (ingepland_vooruit / contract_vooruit) if contract_vooruit else 0.0
+    if aandeel >= 0.02:
+        modus = "planning"
+        modus_uitleg = (
+            f"Deze klant gebruikt de planningsmodule: vooruit staat er "
+            f"{ingepland_vooruit:,.0f} uur ingepland ({aandeel*100:.0f}% van de contracturen). "
+            f"De vrije ruimte komt daarom uit Syntess zelf (type Ongepland), niet uit een model."
+        ).replace(",", ".")
+    else:
+        modus = "tempo"
+        modus_uitleg = (
+            "Deze klant legt vooruit (vrijwel) geen planning vast in Syntess. Ongepland is dan "
+            "gelijk aan de contracturen en zegt niets over vrije ruimte. De tool valt daarom "
+            "terug op het werkelijke realisatietempo: wat er per week feitelijk doorheen gaat."
+        )
+
     meta = SourceMeta(
         klant="Megens",
         bron_label="Live Syntess-data (klant 1142) via de Notifica Data API",
@@ -100,6 +145,8 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
         bronnen=BRONNEN,
         seizoen_toegepast=seizoen,
         seizoen_uitleg=sn.toelichting(params) if seizoen else "",
+        capaciteit_modus=modus,
+        capaciteit_uitleg=modus_uitleg,
     )
 
     return PlanningData(

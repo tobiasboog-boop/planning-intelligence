@@ -53,6 +53,12 @@ class SourceMeta:
     bronnen: list[tuple[str, str, str]] = field(default_factory=list)  # (blok, bron, levert)
     seizoen_toegepast: bool = False
     seizoen_uitleg: str = ""
+    # Welke basis voor vrije capaciteit gebruikt wordt. Automatisch bepaald, want niet
+    # elke klant gebruikt de planningsmodule van Syntess:
+    #   "planning" — er staat planning vooruit; Ongepland is de vrije ruimte
+    #   "tempo"    — geen planning; vrije ruimte = capaciteit minus het realisatietempo
+    capaciteit_modus: str = "planning"
+    capaciteit_uitleg: str = ""
 
 
 @dataclass
