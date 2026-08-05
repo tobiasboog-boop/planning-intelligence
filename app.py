@@ -162,17 +162,20 @@ theme.topbar("Planning Intelligence Tool", sub)
 # Klantweergave: twee tabs — de vraag, en de projecten.
 # Configuratiemodus: alle losse analyses + inrichting (intern).
 if not config_mode:
-    labels = ["Kun je het werk aan?", "Projecten"]
-    keys = ["_hoofd", "projecten"]
+    labels = ["Kun je het werk aan?", "Projecten", "Uitleg & verantwoording"]
+    keys = ["_hoofd", "projecten", "_uitleg"]
 else:
     actief = [k for k in ANALYSES if analyses_aan.get(k)]
-    labels = ["Kun je het werk aan?"] + [ANALYSES[k].label for k in actief] + ["⚙ Inrichting"]
-    keys = ["_hoofd"] + list(actief) + ["_inrichting"]
+    labels = (["Kun je het werk aan?"] + [ANALYSES[k].label for k in actief]
+              + ["Uitleg & verantwoording", "⚙ Inrichting"])
+    keys = ["_hoofd"] + list(actief) + ["_uitleg", "_inrichting"]
 
 if True:
     for tab, key in zip(st.tabs(labels), keys):
         with tab:
-            if key == "_inrichting":
+            if key == "_uitleg":
+                an_hoofd.render_uitleg(data, profile, opts)
+            elif key == "_inrichting":
                 st.subheader("Inrichting — building blocks")
                 st.caption("Intern overzicht van de configuratie voor deze klant. "
                            "Zet blokken en parameters aan/uit in de zijbalk.")

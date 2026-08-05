@@ -95,8 +95,19 @@ def render(data: PlanningData, profile: ClientProfile, opts: dict) -> None:
     if team_keuze != "(alle)":
         ov = ov[ov["team"] == team_keuze]
     with f3:
-        zoek = st.text_input("Zoek project", "", key="pr_zoek")
-    if zoek:
+        # Zowel kiezen als zoeken: een selectbox is te lang om door te scrollen bij honderden
+        # projecten, een zoekveld alleen dwingt je te weten hoe het project heet. Dus beide —
+        # de lijst volgt de zoekterm, en met '(alle)' blijft het hele overzicht staan.
+        zoek = st.text_input("Zoek project", "", key="pr_zoek",
+                            placeholder="deel van de naam of het nummer…")
+        namen = sorted(ov["project"].dropna().astype(str).unique())
+        if zoek:
+            namen = [n for n in namen if zoek.lower() in n.lower()]
+        keuze = st.selectbox(f"Of kies een project ({len(namen)})", ["(alle)"] + namen,
+                            key="pr_keuze")
+    if keuze != "(alle)":
+        ov = ov[ov["project"].astype(str) == keuze]
+    elif zoek:
         ov = ov[ov["project"].str.contains(zoek, case=False, na=False, regex=False)]
 
     if not len(ov):

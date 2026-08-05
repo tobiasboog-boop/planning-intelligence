@@ -34,10 +34,16 @@ CAVEATS = [
     "**Verlof wordt vooruit alleen geregistreerd als het is aangevraagd** — dichtbij vrijwel "
     "compleet, verderop leeg. De seizoenscorrectie vult daarom alleen het verschil aan "
     "tussen wat te verwachten is en wat al vastligt, afgekapt op nul. Nooit dubbel tellen.",
-    "Het openstaande werk is de selectie die het rapport *Begrotingsuren per project* "
-    "zelf toont (montagetaken, actuele hoofdprojecten in fase Opdracht, einddatum in de "
-    "toekomst) en is per project teruggeschaald naar Syntess' eigen measure *Te plannen*. "
-    "Controle: 34.955 u tegen 34.954 u in het rapport — 0,0% afwijking.",
+    "Er zijn **twee measures voor openstaand werk** in het rapport en ze verschillen: de "
+    "hoofdgrafiek toont *Begrotingsuren per dag* (37.450 u, de hele begroting uitgezet over de "
+    "werkdagen), de KPI toont *Nog te plannen uren* (33.574 u). Wij gebruiken elk op de plek "
+    "waar het rapport ze ook gebruikt — de grafiek de eerste, de KPI de tweede — en rekenen ze "
+    "niet naar elkaar toe.",
+    "De **team-vergelijking is onze toevoeging.** In het PBIP-model heeft de capaciteitstabel "
+    "geen relatie met projecten, dus het rapport zet vraag en capaciteit nooit per afdeling "
+    "tegen elkaar af. Wij doen dat wel, op naamgelijkheid: de afdeling van het *project* tegen "
+    "de afdeling van de *medewerker*. Voor 3 van de 4 afdelingen met vraag matcht dat exact; "
+    "onderhoud heeft geen capaciteitsafdeling en valt er dus buiten.",
     "Onderhoud dat al als werkbon is ingepland zit zowel in *Onderhoud open* als in "
     "*Al ingepland*. De rapporten hebben geen gemeenschappelijke sleutel, dus dat is niet "
     "weg te rekenen; de omvang van die maximale dubbeltelling staat in de verantwoording.",
@@ -62,17 +68,14 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
     vraag = vraag[["project_key", "project", "team", "week_start", "uren"]].copy()
     vraag["soort"] = "Projecten"
 
-    # De dagspreiding verdeelt de **volledige begroting** over de werkdagen (37.450 u), niet
-    # het nog te plannen deel. Daarin zit dus ook de 2.496 u die al ingepland staat. Het
-    # tijdpatroon van die spreiding is bruikbaar, het volume niet. Daarom per project
-    # terugschalen naar Syntess' eigen measure "Te plannen" (= begroot - totaal gepland).
-    # Uitkomst sluit daarmee exact aan op het rapport in plaats van 7% te hoog uit te komen.
-    if len(budget) and "te_plannen_syntess" in budget.columns:
-        b = budget.set_index("project_key")
-        ratio = (pd.to_numeric(b["te_plannen_syntess"], errors="coerce")
-                 / pd.to_numeric(b["begrotingsuren"], errors="coerce").replace(0, pd.NA))
-        ratio = ratio.clip(lower=0, upper=1)
-        vraag["uren"] = vraag["uren"] * vraag["project_key"].map(ratio).fillna(1.0).astype(float)
+    # NIET terugschalen. De dagspreiding IS de measure die de hoofdgrafiek van het rapport
+    # gebruikt: [Begrotingsuren per dag] = SUM('begrotingsuren per werkdag'[begrote uren per
+    # werkdag met plafond - methode 1]), totaal 37.450 u. Eerder schaalden we die per project
+    # terug naar [Te plannen Syntess] (34.954 u) "om aan te sluiten op het rapport", maar die
+    # measure wordt in GEEN ENKELE visual van het rapport gebruikt. Daarmee kregen we een
+    # getal dat nergens in Power BI te vinden is. De KPI van het rapport is een andere
+    # measure, [Nog te plannen uren] (33.574 u), en die halen we apart op als `nog_te_plannen`.
+    # Grafiek = begrote uren per week; KPI = nog te plannen. Elk op zijn eigen plek.
 
     onderhoud = ms.fetch_onderhoud_per_week(c)
     if len(onderhoud):

@@ -116,11 +116,14 @@ CLIENTS: dict[str, ClientProfile] = {
         key="megens", name="Megens (echte data)",
         tagline="Live Syntess-data (klant 1142) via de Notifica Data API",
         data_mode="megens",
-        # seizoen UIT: de Power BI-rapporten van Megens kennen geen seizoenscorrectie.
+        # seizoen AAN: de contracturen in Syntess staan onveranderd op 2.756 u per week --
+        # ook in de bouwvak -- en alleen aangevraagd verlof wordt als aparte regel afgetrokken.
+        # Zonder de correctie lijkt de zomer daardoor even ruim als november. Het model vult
+        # alleen het verschil aan met wat al is aangevraagd, dus nooit dubbel.
         # Standaard tonen we dus exact hun cijfers; de correctie is een optie in de
         # configuratiemodus en wordt dan expliciet als Notifica-model gelabeld.
         blocks={**ALLE_BLOKKEN_AAN, "prognose": False, "efficiency": False,
-                "seizoen": False},
+                "seizoen": True},
         analyses=dict(ALLE_ANALYSES_AAN),
     ),
     # Volledige inrichting op synthetische data (alle blokken, incl. prognose)
