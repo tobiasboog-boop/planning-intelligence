@@ -21,6 +21,50 @@ from notifica_sdk import NotificaClient
 
 KLANT = 1142
 
+# ── Dimensie-context uit de PBIP ────────────────────────────────────────────
+# Overgenomen uit de slicer-standaarden van de rapportpagina "Begrotingsuren per
+# project" (Projectenplanning_postgres.Report). Zonder deze filters tel je het hele
+# archief mee en komt "nog te plannen" op 214.685 u uit; met de filters van het
+# rapport zelf op 33.574 u — en dan sluit het aan op Syntess' eigen "Te plannen"
+# (34.954 u). Niet interpreteren: dit is de selectie die het rapport standaard toont.
+PBIP_TAKEN = [
+    "1000 - Montagewerkzaamheden",
+    "1000IN - Montagewerkzaamheden - Inleen",
+    "1100 - Elektra Montagewerkzaamheden",
+    "1150 - Project begeleiden / uitvoerder",
+    "1200 - Assistent Montagewerkzaamheden",
+    "1300 - Prefab werkzaamheden",
+    "1400 - M&R Montagewerkzaamheden",
+]
+PBIP_WERKGROEPEN = [
+    "01.1000 - Projecten Wtb",
+    "01.6000 - Projecten Elektra",
+    "01.6300 - Projecten Elektra Qirion",
+]
+PBIP_HOOFDPROJECTSTATUS = "Actueel"
+PBIP_HOOFDPROJECTFASE = "Opdracht"
+PBIP_EINDDATUM_IN_TOEKOMST = "Ja"
+
+# Slicer "Methode te plannen uren" staat in het rapport standaard op
+# "Methode 1: geplande uren verleden" (ID 1); "Methode bron datums" op
+# "Methode 2: werkvoorbereidingregel en project" (ID 2 = geen extra bron-filter).
+PBIP_METHODE = 1
+
+
+def _in(waarden) -> str:
+    return ", ".join("'" + w.replace("'", "''") + "'" for w in waarden)
+
+
+def pbip_filter(alias_b: str = "b", alias_p: str = "p") -> str:
+    """WHERE-fragment dat de dimensie-context van de rapportpagina reproduceert."""
+    return f'''
+        TRIM({alias_b}."Taak") IN ({_in(PBIP_TAKEN)})
+        AND TRIM({alias_p}."Hoofdproject werkgroep") IN ({_in(PBIP_WERKGROEPEN)})
+        AND TRIM({alias_p}."Hoofdprojectstatus") = '{PBIP_HOOFDPROJECTSTATUS}'
+        AND TRIM({alias_p}."Hoofdprojectfase") = '{PBIP_HOOFDPROJECTFASE}'
+        AND TRIM({alias_b}."einddatum in toekomst") = '{PBIP_EINDDATUM_IN_TOEKOMST}'
+    '''
+
 
 def get_client() -> NotificaClient:
     """Bouwt de NotificaClient. Accepteert zowel NOTIFICA_DATA_KEY als NOTIFICA_DWH_KEY
@@ -42,18 +86,22 @@ def _q(client: NotificaClient, sql: str) -> pd.DataFrame:
 
 # ── VRAAG (demand) ───────────────────────────────────────────────────────────
 def fetch_demand_per_week(client) -> pd.DataFrame:
-    """Benodigde uren per project/afdeling per week (voorwaarts).
-    Bron: maatwerk.'Begrotinguren per werkdag' (dagspreiding, methode 2 = met plafond),
-    gejoind naar Begrotingsuren (voor ProjectKey) en Projecten (afdeling/naam)."""
-    sql = '''
+    """Nog in te plannen uren per project per week, in de dimensie-context van de PBIP.
+
+    Bron: maatwerk.'Begrotinguren per werkdag' (dagspreiding met plafond), gejoind naar
+    Begrotingsuren (ProjectKey) en Projecten (afdeling/naam). Methode-kolom en filters
+    volgen de standaardselectie van de rapportpagina — zie PBIP_* hierboven.
+    """
+    sql = f'''
         SELECT TRIM(p."Afdeling") AS afdeling, b."ProjectKey" AS project_key,
                TRIM(p."Project") AS project,
                date_trunc('week', w."plandatum")::date AS week_start,
-               SUM(w."begrote uren per werkdag met plafond - methode 2") AS vraag_uren
+               SUM(w."begrote uren per werkdag met plafond - methode {PBIP_METHODE}") AS vraag_uren
         FROM maatwerk."Begrotinguren per werkdag" w
         JOIN maatwerk."Begrotingsuren" b
           ON w."ProjectWerkvoorbereidingRegelKey" = b."ProjectWerkvoorbereidingRegelKey"
         JOIN projecten."Projecten" p ON b."ProjectKey" = p."ProjectKey"
+        WHERE {pbip_filter()}
         GROUP BY 1,2,3,4 ORDER BY week_start
     '''
     df = _q(client, sql)
@@ -109,17 +157,27 @@ def fetch_medewerkers(client) -> pd.DataFrame:
 
 # ── PROJECT-OVERZICHT (Begrotingsuren per project) ───────────────────────────
 def fetch_budget_per_project(client) -> pd.DataFrame:
-    """Begroting/restvraag per project (methode 2)."""
-    sql = '''
+    """Begroting en restvraag per project, in de dimensie-context van de PBIP.
+
+    Kolomkeuze volgt de slicer-standaard van het rapport (methode 1). `te_plannen_syntess`
+    is het getal dat Syntess zelf berekent — de controle op onze eigen herberekening.
+    """
+    sql = f'''
         SELECT b."ProjectKey" AS project_key,
-               SUM(b."begrotingsuren - methode 2") AS begrotingsuren,
-               SUM(b."Nog te plannen - methode 2") AS nog_te_plannen,
-               SUM(b."Overschrijding boven behoefte uren - methode 2") AS overschrijding,
-               SUM(b."Aantal uur") AS behoefte_uren
-        FROM maatwerk."Begrotingsuren" b GROUP BY 1
+               SUM(b."begrotingsuren - methode {PBIP_METHODE}") AS begrotingsuren,
+               SUM(b."Nog te plannen - methode {PBIP_METHODE}") AS nog_te_plannen,
+               SUM(b."Overschrijding boven behoefte uren - methode {PBIP_METHODE}") AS overschrijding,
+               SUM(b."Aantal uur") AS behoefte_uren,
+               SUM(b."Te plannen Syntess") AS te_plannen_syntess,
+               SUM(b."Totaal gepland Syntess") AS totaal_gepland_syntess
+        FROM maatwerk."Begrotingsuren" b
+        JOIN projecten."Projecten" p ON b."ProjectKey" = p."ProjectKey"
+        WHERE {pbip_filter()}
+        GROUP BY 1
     '''
     df = _q(client, sql)
-    for c in ("begrotingsuren", "nog_te_plannen", "overschrijding", "behoefte_uren"):
+    for c in ("begrotingsuren", "nog_te_plannen", "overschrijding", "behoefte_uren",
+              "te_plannen_syntess", "totaal_gepland_syntess"):
         df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
     return df
 
