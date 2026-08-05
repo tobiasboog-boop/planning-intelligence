@@ -50,6 +50,22 @@ PBIP_EINDDATUM_IN_TOEKOMST = "Ja"
 # "Methode 2: werkvoorbereidingregel en project" (ID 2 = geen extra bron-filter).
 PBIP_METHODE = 1
 
+# ── Capaciteit: definitie van de pagina "Projectplanning" ──────────────────
+# Drie vlaggen op stam.Medewerkers begrenzen de capaciteitspopulatie. Let op de
+# derde: het rapport rekent GEEN ingeleende capaciteit mee. Plus: alleen werkdagen
+# en het venster "week index 1-52" (vanaf volgende week, 52 weken vooruit).
+# Geverifieerd 5-8-2026: 71 medewerkers, 142.808 u over 52 weken = 2.746 u/week.
+PBIP_MDW_STATUS = "N"            # Medewerker Status (paginafilter, verborgen+vergrendeld)
+PBIP_MDW_PROJECTPLANNING = "J"   # Projectenplanning (J/N) — slicer-default
+PBIP_MDW_INGELEEND = "N"         # Ingeleend (J/N) — slicer-default: eigen mensen only
+
+# ── Onderhoud: definitie van de pagina's in het Onderhoudsplanning-rapport ──
+# "Aantal uur nog te doen" draait op notifica."SSM Onderhoudsplanning en te
+# verwachten kosten" met een eigen kolom Plandatum — NIET op
+# Werkbonparagrafen.Plandatum (dat veld vult pas nadat er een werkbon is).
+# Geverifieerd 5-8-2026: 24.905 u nog uit te voeren, 3.252 u achterstand.
+PBIP_ONDERHOUD_VANAF = "2024-01-01"   # slicer-ondergrens Plandatum
+
 
 def _in(waarden) -> str:
     return ", ".join("'" + w.replace("'", "''") + "'" for w in waarden)
@@ -116,7 +132,7 @@ def fetch_capacity_per_week(client) -> pd.DataFrame:
     Bron: planning.'Geplande en contracturen medewerkers' Type=Contracturen/Ongepland,
     medewerker->afdeling via stam.Medewerkers.AfdelingKey -> stam.Afdelingen.
     NB: geen verzuim/verlof in de bron -> contract = bruto (licht overschat)."""
-    sql = '''
+    sql = f'''
         SELECT TRIM(a."Afdeling") AS afdeling,
                date_trunc('week', cu."Datum"::timestamp)::date AS week_start,
                SUM(CASE WHEN TRIM(cu."Type")='Contracturen' THEN cu."Aantal Uur"::numeric ELSE 0 END) AS capaciteit_uren,
@@ -127,6 +143,10 @@ def fetch_capacity_per_week(client) -> pd.DataFrame:
         JOIN stam."Medewerkers" m ON m."MedewerkerKey" = cu."MedewerkerKey"
         JOIN stam."Afdelingen" a  ON a."AfdelingKey"   = m."AfdelingKey"
         WHERE TRIM(cu."Type") IN ('Contracturen','Ongepland') AND cu."Datum" IS NOT NULL
+          AND TRIM(m."Medewerker Status") = '{PBIP_MDW_STATUS}'
+          AND TRIM(m."Projectenplanning (J/N)") = '{PBIP_MDW_PROJECTPLANNING}'
+          AND TRIM(m."Ingeleend (J/N)") = '{PBIP_MDW_INGELEEND}'
+          AND EXTRACT(ISODOW FROM cu."Datum"::timestamp) BETWEEN 1 AND 5
         GROUP BY 1,2 ORDER BY 2
     '''
     df = _q(client, sql)
@@ -225,6 +245,33 @@ def fetch_calculatie_per_project(client) -> pd.DataFrame:
         return df
     except Exception:
         return pd.DataFrame(columns=["project_key", "calculatie_uren"])
+
+
+def fetch_onderhoud_per_week(client) -> pd.DataFrame:
+    """Nog uit te voeren onderhoud per week — definitie van het Onderhoudsplanning-rapport.
+
+    Bron: notifica."SSM Onderhoudsplanning en te verwachten kosten", kolom
+    "nog te verwachten aantal" (uren), gepland op de eigen kolom Plandatum. Dit is de
+    contract-/bestekparagraaf-vooruitplanning: wanneer is de volgende onderhoudsbeurt
+    verwacht — los van of er al een werkbon voor is aangemaakt.
+    """
+    sql = f'''
+        SELECT date_trunc('week', "Plandatum"::date)::date AS week_start,
+               SUM("nog te verwachten aantal") AS uren, COUNT(*) AS posten
+        FROM notifica."SSM Onderhoudsplanning en te verwachten kosten"
+        WHERE "TaakKey" IS NOT NULL
+          AND "Plandatum"::date >= DATE '{PBIP_ONDERHOUD_VANAF}'
+        GROUP BY 1 ORDER BY 1
+    '''
+    try:
+        df = _q(client, sql)
+    except Exception:
+        return pd.DataFrame(columns=["week_start", "uren", "posten"])
+    if len(df):
+        df["week_start"] = pd.to_datetime(df["week_start"])
+        for c in ("uren", "posten"):
+            df[c] = pd.to_numeric(df[c], errors="coerce").fillna(0.0)
+    return df
 
 
 def fetch_tempo_per_week(client, weken: int = 12) -> pd.DataFrame:

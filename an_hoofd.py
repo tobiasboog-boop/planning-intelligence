@@ -32,14 +32,15 @@ def _wk(ts) -> str:
 
 
 def _venster(data: PlanningData, horizon: int) -> pd.DatetimeIndex:
-    """Week-as die bij de huidige week begint (een balans die in het verleden start
-    is niet planbaar)."""
-    weken = data.weken(horizon)
+    """Week-as die ALTIJD bij de huidige week begint.
+
+    Niet afleiden uit de data: de onderhoudsplanning bevat ook regels met een plandatum
+    in het verleden (achterstand), en die trokken het venster jaren terug — met als
+    gevolg een capaciteitsreeks van nul. Vooruitkijken begint bij vandaag.
+    """
     vandaag = pd.Timestamp.today().normalize()
     maandag = vandaag - pd.Timedelta(days=vandaag.weekday())
-    if len(weken) and weken[0] < maandag <= weken[-1]:
-        return pd.date_range(start=maandag, periods=horizon, freq="7D")
-    return weken
+    return pd.date_range(start=maandag, periods=horizon, freq="7D")
 
 
 def _basis(data: PlanningData, profile: ClientProfile, opts: dict):
@@ -81,55 +82,54 @@ def _cap_reeks(data, opts, weken) -> pd.Series:
     return per_week(cap, kolom, weken) * eff
 
 
-def _tempo_antwoord(data, opts, weken, c_w):
-    """Conclusie op basis van het WERKELIJKE tempo.
+def _rapport_antwoord(data, opts, weken):
+    """Conclusie op basis van de RAPPORTDEFINITIES, niets zelf verzonnen.
 
-    Bij Megens wordt vooruit nauwelijks gepland; dan is de planning geen maat voor
-    de vrije ruimte. Wat er per week doorheen gaat, is dat wel.
+    Openstaand werk = projectwerk (pagina 'Begrotingsuren per project') plus nog uit te
+    voeren onderhoud (rapport Onderhoudsplanning). Capaciteit = de pagina 'Projectplanning':
+    eigen monteurs met de projectenplanning-vlag, exclusief inleen.
     """
-    t = data.tempo_per_week()
-    if not t:
-        return None
-    cap_reeks = _cap_reeks(data, opts, weken)
-    cap_wk = float(cap_reeks[cap_reeks > 0].median()) if (cap_reeks > 0).any() else 0.0
-    bezet = t["totaal"]
-    vrij = cap_wk - bezet
-    openstaand = float(data.vraag["uren"].sum()) if len(data.vraag) else 0.0
-    proj_tempo = t["projecturen"]
+    vandaag = pd.Timestamp.today().normalize()
+    v = data.vraag.copy()
+    v["week_start"] = pd.to_datetime(v["week_start"])
+    soort = v["soort"] if "soort" in v.columns else pd.Series("Projecten", index=v.index)
+    v["soort"] = soort
 
-    # Hoe lang duurt het openstaande werk bij het huidige projecttempo?
-    weken_tempo = (openstaand / proj_tempo) if proj_tempo > 0 else float("nan")
-    # En hoe lang als je alleen de vrije ruimte inzet?
-    weken_vrij = (openstaand / vrij) if vrij > 0 else float("inf")
+    vooruit = v[v["week_start"] >= vandaag]
+    per_soort = vooruit.groupby("soort")["uren"].sum().to_dict()
+    projecten = float(per_soort.get("Projecten", 0.0))
+    onderhoud = float(per_soort.get("Onderhoud", 0.0))
+    openstaand = projecten + onderhoud
+    achterstand = float(v[(v["soort"] == "Onderhoud") & (v["week_start"] < vandaag)]["uren"].sum())
 
-    label_cap = "effectief beschikbaar" if opts.get("seizoen") else "bruto contract"
-    basis = (f"Gemeten over {t['weken']} volledige weken "
-             f"({pd.Timestamp(t['van']).strftime('%d-%m')} t/m "
-             f"{pd.Timestamp(t['tot']).strftime('%d-%m-%Y')}).")
+    cap = _cap_reeks(data, opts, weken)
+    cap_nz = cap[cap > 0]
+    cap_wk = float(cap_nz.median()) if len(cap_nz) else 0.0
+    # n_mw staat per afdeling-week; het totaal is de som over afdelingen in één week.
+    n_mw = 0
+    if len(data.capaciteit) and "n_mw" in data.capaciteit.columns:
+        n_mw = int(data.capaciteit.groupby("week_start")["n_mw"].sum().max())
 
-    if vrij <= 0:
-        return ("risico",
-                f"Nee &mdash; je zit al vol. Er gaat <b>{fmt(bezet)} uur per week</b> doorheen "
-                f"terwijl er <b>{fmt(cap_wk)} uur</b> {label_cap} is.",
-                f"Het openstaande werk van <b>{fmt(openstaand)} uur</b> kan er alleen bij als er "
-                f"iets anders af gaat, of met extra mensen. {basis}", t, cap_wk, bezet, vrij,
-                openstaand, weken_tempo)
+    weken_nodig = (openstaand / cap_wk) if cap_wk > 0 else float("nan")
+    kind = "risico" if weken_nodig > 40 else ("let_op" if weken_nodig > 20 else "goed")
 
-    kind = "risico" if weken_vrij > 26 else ("let_op" if weken_vrij > 13 else "goed")
-    kop = (f"Het openstaande werk van <b>{fmt(openstaand)} uur</b> kost bij je huidige tempo "
-           f"ongeveer <b>{weken_tempo:.0f} weken</b> &mdash; met alleen je vrije ruimte "
-           f"<b>{weken_vrij:.0f} weken</b>.")
-    inleen = float(data.tempo["uren_buiten_populatie"].median()) if \
-        "uren_buiten_populatie" in data.tempo.columns else 0.0
-    extra = ""
-    if inleen > 0:
-        extra = (f" Daarnaast wordt er <b>{fmt(inleen)} uur per week</b> geboekt door mensen "
-                 f"zonder contracturen &mdash; ingeleende capaciteit buiten deze telling.")
-    toe = (f"Je eigen ploeg draait nu <b>{fmt(proj_tempo)} projecturen</b> plus "
-           f"<b>{fmt(t['indirecte_uren'])} indirecte uren</b> per week, samen {fmt(bezet)} van de "
-           f"{fmt(cap_wk)} uur {label_cap}. Dat laat <b>{fmt(vrij)} uur per week</b> echt vrij."
-           f"{extra} {basis}")
-    return (kind, kop, toe, t, cap_wk, bezet, vrij, openstaand, weken_tempo)
+    kop = (f"Er staat <b>{fmt(openstaand)} uur</b> werk open. Met "
+           f"<b>{fmt(cap_wk)} uur per week</b> eigen capaciteit is dat "
+           f"<b>{weken_nodig:.0f} weken</b> vol.")
+    delen = []
+    if projecten:
+        delen.append(f"<b>{fmt(projecten)} uur</b> projectwerk")
+    if onderhoud:
+        delen.append(f"<b>{fmt(onderhoud)} uur</b> onderhoud")
+    toe = "Opgebouwd uit " + " en ".join(delen) + "."
+    if achterstand > 0:
+        toe += (f" Daarnaast staat er <b>{fmt(achterstand)} uur</b> onderhoud met een plandatum "
+                f"in het verleden — achterstand die er nog bij komt.")
+    toe += (f" De capaciteit is die van {n_mw and str(n_mw) + ' ' or ''}eigen monteurs met de "
+            f"projectenplanning-vlag; ingeleende capaciteit rekent het rapport niet mee.")
+    return kind, kop, toe, dict(projecten=projecten, onderhoud=onderhoud,
+                                openstaand=openstaand, achterstand=achterstand,
+                                cap_wk=cap_wk, weken_nodig=weken_nodig, n_mw=n_mw)
 
 
 def _antwoord(data, profile, opts, weken, v_w, c_w, beslag, cap_rel, kolom):
@@ -206,63 +206,53 @@ def render(data: PlanningData, profile: ClientProfile, opts: dict) -> None:
 
     weken, v_w, c_w, bruto_w, beslag, cap_rel, kolom = _basis(data, profile, opts)
 
-    # Realisatietempo is de eerlijkste maat zodra vooruit nauwelijks gepland wordt.
-    tempo_res = _tempo_antwoord(data, opts, weken, c_w)
-    if tempo_res:
-        kind, kop, toe, t, cap_wk, bezet, vrij, openstaand, weken_tempo = tempo_res
-        _antwoordblok(kind, kop, toe)
+    # Alles hieronder komt uit de rapportdefinities (zie herkomst-blok onderaan).
+    kind, kop, toe, k = _rapport_antwoord(data, opts, weken)
+    _antwoordblok(kind, kop, toe)
 
-        kpi_cards([
-            {"lbl": "Openstaand werk", "val": fmt(openstaand), "sub": "uren nog te plannen",
-             "cls": "accent"},
-            {"lbl": "Tempo projecturen", "val": fmt(t["projecturen"]), "sub": "per week (mediaan)"},
-            {"lbl": "Indirect", "val": fmt(t["indirecte_uren"]), "sub": "per week"},
-            {"lbl": "Vrije ruimte", "val": fmt(vrij), "sub": "uren per week",
-             "cls": "risk" if vrij <= 0 else ("warn" if vrij < 0.15 * cap_wk else "ok")},
-            {"lbl": "Doorlooptijd", "val": f"{weken_tempo:.0f} wk" if weken_tempo == weken_tempo else "—",
-             "sub": "bij huidig tempo",
-             "cls": "risk" if weken_tempo > 26 else ("warn" if weken_tempo > 13 else "ok")},
-        ])
-        if "uren_buiten_populatie" in data.tempo.columns:
-            inleen = float(data.tempo["uren_buiten_populatie"].median())
-            if inleen > 0:
-                st.caption(f"Let op: hiernaast wordt er nog {fmt(inleen)} uur per week geboekt "
-                           f"door mensen zonder contracturen in Syntess (ingeleend of niet "
-                           f"vastgelegd). Die capaciteit zit niet in de cijfers hierboven.")
+    kpi_cards([
+        {"lbl": "Projectwerk open", "val": fmt(k["projecten"]), "sub": "uren nog te plannen",
+         "cls": "accent"},
+        {"lbl": "Onderhoud open", "val": fmt(k["onderhoud"]), "sub": "uren nog uit te voeren"},
+        {"lbl": "Achterstand onderhoud", "val": fmt(k["achterstand"]), "sub": "plandatum verstreken",
+         "cls": "risk" if k["achterstand"] > 0 else "ok"},
+        {"lbl": "Eigen capaciteit", "val": fmt(k["cap_wk"]), "sub": "uren per week"},
+        {"lbl": "Volgeboekt", "val": f"{k['weken_nodig']:.0f} wk" if k["weken_nodig"] == k["weken_nodig"] else "—",
+         "sub": "als er niets bij komt",
+         "cls": "risk" if k["weken_nodig"] > 40 else ("warn" if k["weken_nodig"] > 20 else "ok")},
+    ])
 
-        st.markdown("###### Verleden en vooruit: wat gaat er per week doorheen?")
-        _tempo_grafiek(data, opts, weken, t, cap_wk, vrij)
+    st.markdown("###### Openstaand werk per week, tegen je eigen capaciteit")
+    _vraag_grafiek(data, opts, weken, k)
+    _detail_blokken(data, profile, opts, weken, cap_rel, kolom)
 
-        with st.expander("Wat staat er wél vooruit gepland?"):
-            try:
-                import megens_source as _ms
-                wb = _ms.fetch_werkbon_planning(_ms.get_client())
-            except Exception:
-                wb = pd.DataFrame()
-            if len(wb):
-                wb = wb.sort_values("week_start").head(14)
-                figw = go.Figure()
-                figw.add_trace(go.Bar(x=wb["week_start"], y=wb["voorbereide_uren"],
-                                      name="Voorbereide uren", marker_color=GOLD))
-                figw.add_trace(go.Scatter(x=wb["week_start"], y=wb["werkbonnen"],
-                                          name="Aantal werkbonnen", yaxis="y2",
-                                          line=dict(color=NAVY2, width=2)))
-                figw.update_layout(**PLOT, height=280,
-                                   yaxis2=dict(overlaying="y", side="right", showgrid=False,
-                                               title="werkbonnen"))
-                figw.update_yaxes(title="uren", gridcolor="#EEF0F7")
-                st.plotly_chart(figw, width="stretch")
-                st.caption(f"Werkbonnen met een afspraakdatum vooruit: "
-                           f"{int(wb['werkbonnen'].sum())} stuks, samen "
-                           f"{fmt(wb['voorbereide_uren'].sum())} voorbereide uren. "
-                           f"Dat is een fractie van de {fmt(t['totaal'])} uur die er per week "
-                           f"werkelijk doorheen gaat — de rest wordt niet vooraf gepland.")
-            else:
-                st.caption("Geen vooruit ingeplande werkbonnen gevonden.")
+    with st.expander("Wat gaat er werkelijk per week doorheen? (niet uit de rapporten)"):
+        tp = data.tempo_per_week()
+        if tp:
+            st.markdown(
+                f"De rapporten zeggen niets over het tempo. Gemeten op de geboekte uren draait "
+                f"de hele organisatie **{fmt(tp['projecturen'])} projecturen** plus "
+                f"**{fmt(tp['indirecte_uren'])} indirecte uren** per week "
+                f"(mediaan over {tp['weken']} volledige weken). Let op: dat is de "
+                f"**hele** ploeg, dus een ruimere populatie dan de eigen monteurs hierboven.")
+            hist = data.tempo.sort_values("week_start")
+            figt = go.Figure()
+            figt.add_trace(go.Bar(x=hist["week_start"], y=hist["projecturen"],
+                                  name="Projecturen", marker_color=NAVY2))
+            figt.add_trace(go.Bar(x=hist["week_start"], y=hist["indirecte_uren"],
+                                  name="Indirect", marker_color=NAVY_LIGHT))
+            if "uren_buiten_populatie" in hist.columns:
+                figt.add_trace(go.Bar(x=hist["week_start"], y=hist["uren_buiten_populatie"],
+                                      name="Ingeleend", marker_color=GREY))
+            figt.update_layout(**PLOT, height=280, barmode="stack")
+            figt.update_yaxes(title="uren per week", gridcolor="#EEF0F7")
+            st.plotly_chart(figt, width="stretch")
+        else:
+            st.caption("Geen tempo-gegevens beschikbaar.")
 
-        _detail_blokken(data, profile, opts, weken, cap_rel, kolom)
-        caveat_box(data)
-        return
+    _herkomst()
+    caveat_box(data)
+    return
 
     kind, kop, toelichting = _antwoord(data, profile, opts, weken, v_w, c_w, beslag,
                                        cap_rel, kolom)
@@ -431,3 +421,66 @@ def _tempo_grafiek(data, opts, weken, t, cap_wk, vrij) -> None:
     uitleg += (f" &mdash; nu {fmt(vrij)} uur per week." if vrij > 0
                else f" &mdash; die is er nu niet ({fmt(vrij)} uur).")
     st.caption(uitleg)
+
+def _vraag_grafiek(data, opts, weken, k) -> None:
+    """Openstaand werk per week, gesplitst naar soort, met de capaciteitslijn."""
+    v = data.vraag.copy()
+    v["week_start"] = pd.to_datetime(v["week_start"])
+    if "soort" not in v.columns:
+        v["soort"] = "Projecten"
+    v = v[v["week_start"].isin(weken)]
+    cap = _cap_reeks(data, opts, weken)
+
+    kleur = {"Projecten": NAVY2, "Onderhoud": GOLD}
+    fig = go.Figure()
+    for s in ["Projecten", "Onderhoud"]:
+        deel = v[v["soort"] == s]
+        if not len(deel):
+            continue
+        reeks = deel.groupby("week_start")["uren"].sum().reindex(weken, fill_value=0.0)
+        fig.add_trace(go.Bar(x=list(weken), y=reeks.values, name=s,
+                             marker_color=kleur.get(s, NAVY_LIGHT)))
+    capn = cap[cap > 0]
+    if len(capn):
+        fig.add_trace(go.Scatter(x=list(capn.index), y=capn.values, mode="lines",
+                                 name="Eigen capaciteit per week",
+                                 line=dict(color=NAVY, width=2.5)))
+    fig.update_layout(**PLOT, height=340, barmode="stack")
+    fig.update_yaxes(title="uren per week", gridcolor="#EEF0F7")
+    fig.update_xaxes(gridcolor="#F5F6FA", tickformat="%d-%m")
+    st.plotly_chart(fig, width="stretch")
+    st.caption("Staven: werk dat op die week gepland staat. Lijn: capaciteit van de eigen "
+               "monteurs. Het openstaande werk is niet gelijkmatig over de weken verdeeld — "
+               "waar de staaf boven de lijn komt, past het die week niet.")
+
+
+def _herkomst() -> None:
+    """Elk cijfer met de bron erbij, zodat het in Power BI na te slaan is."""
+    with st.expander("Waar komt elk cijfer vandaan?"):
+        rijen = [
+            ("Projectwerk open", "Projectenplanning &rarr; <i>Begrotingsuren per project</i>",
+             "Nog te plannen uren (methode 1), met de slicer-standaarden van die pagina: "
+             "montagetaken, hoofdproject Actueel + fase Opdracht, einddatum in de toekomst"),
+            ("Onderhoud open", "Onderhoudsplanning &rarr; <i>Nog uit te voeren</i>",
+             "SSM Onderhoudsplanning en te verwachten kosten, kolom 'nog te verwachten aantal', "
+             "op eigen Plandatum vanaf 2024-01-01"),
+            ("Achterstand onderhoud", "Onderhoudsplanning &rarr; <i>Achterstand</i>",
+             "zelfde bron, plandatum v&oacute;&oacute;r vandaag"),
+            ("Eigen capaciteit", "Projectenplanning &rarr; <i>Projectplanning</i>",
+             "Contracturen medewerkers, begrensd op Medewerker Status = N, "
+             "Projectenplanning = Ja en Ingeleend = Nee, alleen werkdagen"),
+        ]
+        html = ('<table style="width:100%;border-collapse:collapse;font-size:12.5px">'
+                '<tr style="color:#8A8DB0;font-size:10.5px;text-transform:uppercase">'
+                '<th style="text-align:left;padding:6px 8px">Cijfer</th>'
+                '<th style="text-align:left;padding:6px 8px">Rapport / pagina</th>'
+                '<th style="text-align:left;padding:6px 8px">Measure en filters</th></tr>')
+        for a, b, c in rijen:
+            html += (f'<tr><td style="padding:6px 8px;font-weight:650;color:{NAVY}">{a}</td>'
+                     f'<td style="padding:6px 8px">{b}</td>'
+                     f'<td style="padding:6px 8px;color:#5D6089">{c}</td></tr>')
+        html += "</table>"
+        st.markdown(html, unsafe_allow_html=True)
+        st.caption("De seizoenscorrectie in de zijbalk is een Notifica-model en zit niet in "
+                   "deze rapporten. Staat die aan, dan wijkt de capaciteit bewust af van "
+                   "wat Power BI toont.")

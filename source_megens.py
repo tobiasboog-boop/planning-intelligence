@@ -50,9 +50,19 @@ def load(params: sn.SeasonParams | None = None, seizoen: bool = True) -> Plannin
     calc = ms.fetch_calculatie_per_project(c)
     overzicht = ms.build_project_overview(dim, budget, booked, calc)
 
-    # ── vraag ────────────────────────────────────────────────────────────────
+    # ── vraag: projectwerk + onderhoud, elk met zijn eigen rapportdefinitie ──
     vraag = demand.rename(columns={"afdeling": "team", "vraag_uren": "uren"})
-    vraag = vraag[["project_key", "project", "team", "week_start", "uren"]]
+    vraag = vraag[["project_key", "project", "team", "week_start", "uren"]].copy()
+    vraag["soort"] = "Projecten"
+
+    onderhoud = ms.fetch_onderhoud_per_week(c)
+    if len(onderhoud):
+        oh = pd.DataFrame({
+            "project_key": pd.NA, "project": "Onderhoudscontracten",
+            "team": "Onderhoud (S&O)", "week_start": onderhoud["week_start"],
+            "uren": onderhoud["uren"], "soort": "Onderhoud",
+        })
+        vraag = pd.concat([vraag, oh], ignore_index=True)
 
     # ── capaciteit (+ seizoenscorrectie) ─────────────────────────────────────
     capaciteit = cap.rename(columns={"afdeling": "team", "capaciteit_uren": "contract_uren"})

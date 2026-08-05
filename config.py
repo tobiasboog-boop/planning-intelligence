@@ -116,7 +116,11 @@ CLIENTS: dict[str, ClientProfile] = {
         key="megens", name="Megens (echte data)",
         tagline="Live Syntess-data (klant 1142) via de Notifica Data API",
         data_mode="megens",
-        blocks={**ALLE_BLOKKEN_AAN, "prognose": False, "efficiency": False},
+        # seizoen UIT: de Power BI-rapporten van Megens kennen geen seizoenscorrectie.
+        # Standaard tonen we dus exact hun cijfers; de correctie is een optie in de
+        # configuratiemodus en wordt dan expliciet als Notifica-model gelabeld.
+        blocks={**ALLE_BLOKKEN_AAN, "prognose": False, "efficiency": False,
+                "seizoen": False},
         analyses=dict(ALLE_ANALYSES_AAN),
     ),
     # Volledige inrichting op synthetische data (alle blokken, incl. prognose)
